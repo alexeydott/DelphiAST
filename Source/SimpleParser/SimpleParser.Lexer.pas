@@ -2104,6 +2104,10 @@ end;
 
 function TmwBasePasLex.IsIdentifiers(AChar: Char): Boolean;
 begin
+  {$IF DECLARED(TCharHelper)}
+  Result := AChar.IsLetterOrDigit or (AChar = '_')
+    or ((Ord(AChar) > 127) and not AChar.IsHighSurrogate and not AChar.IsLowSurrogate);
+  {$ELSE}
   // assuming Delphi identifier may include letters, digits, underscore symbol
   // and any character over 127 except surrogates
   {$IF RTLVersion >= 25}

@@ -3,8 +3,18 @@ unit DelphiAST.Actualization.Tests;
 interface
 procedure RunActualizationTests;
 implementation
-uses Classes, SysUtils, DelphiAST, DelphiAST.Classes, DelphiAST.Consts,
-  DelphiAST.TestFramework, DelphiAST.TestSupport, DelphiAST.Writer;
+uses Classes, SysUtils, SimpleParser.Lexer.Types, DelphiAST, DelphiAST.Classes, DelphiAST.Consts,
+  SimpleParser, DelphiAST.TestFramework, DelphiAST.TestSupport, DelphiAST.Writer;
+type
+  TStrictParser = class(TmwSimplePasPar)
+    procedure Message(Sender:TObject; const Typ:TMessageEventType;
+      const Msg:string; X,Y:Integer);
+  end;
+procedure TStrictParser.Message(Sender:TObject; const Typ:TMessageEventType;
+  const Msg:string; X,Y:Integer);
+begin
+  if Typ=meError then raise Exception.Create(Msg);
+end;
 function Named(Node:TSyntaxNode; Typ:TSyntaxNodeType; const Name:string):TSyntaxNode;
 var C,N:TSyntaxNode;
 begin
@@ -122,8 +132,47 @@ begin
   Reject(Q+Q+Q+#10+'text'+Q+Q+Q);
   Reject(Q+Q+Q+#10+'text'+#10+Q+Q);
 end;
+procedure TestReferenceTypeConsumption;
+const Source='unit Refs; interface type TFunc=reference to function(A:Integer):Boolean; TProc=reference to procedure(B:Integer); TEmpty=reference to procedure; implementation end.';
+var Parser:TStrictParser; Stream:TStringStream; Root:TSyntaxNode;
+begin
+  Parser:=TStrictParser.Create;Parser.OnMessage:=Parser.Message;Stream:=TStringStream.Create(Source);
+  try Parser.Run('Refs',Stream);finally Stream.Free;Parser.Free;end;
+  Root:=ParseSource(Source);
+  try AssertEquals(2,CountDescendants(Root,ntParameter));
+    AssertEquals(3,CountDescendants(Root,ntAnonymousMethodType));
+    AssertNotNil(FindDescendant(Root,ntReturnType));
+  finally Root.Free;end;
+end;
+procedure TestNamedVariantTag;
+var Root,N:TSyntaxNode;
+begin
+  Root:=ParseSource('unit Variants; interface type TRec=record case Kind:Byte of 0:(A:Integer); 1:(B:Double); end; implementation end.');
+  try N:=FindDescendant(Root,ntVariantTag);AssertNotNil(N);
+    AssertEquals('Kind',N.GetAttribute(anName));AssertEquals('Byte',N.GetAttribute(anType));
+    AssertEquals(2,CountDescendants(Root,ntField));
+  finally Root.Free;end;
+end;
+procedure TestAbsoluteVariable;
+var Root,N,A:TSyntaxNode;
+begin
+  Root:=ParseSource('unit Aliases; interface var Original:Integer; AliasValue:Integer absolute Original; AddressValue:Byte absolute $1234; InitialValue:Integer=42; implementation end.');
+  try
+    N:=Named(Root,ntVariable,'AliasValue');AssertNotNil(N);
+    AssertTrue(N.FindNode(ntValue)=nil,'Absolute alias must not be an initializer');
+    A:=N.FindNode(ntAbsolute);AssertNotNil(A);AssertNotNil(FindDescendant(A,ntIdentifier));
+    N:=Named(Root,ntVariable,'AddressValue');AssertNotNil(N);
+    AssertTrue(N.FindNode(ntValue)=nil);A:=N.FindNode(ntAbsolute);AssertNotNil(A);
+    AssertNotNil(FindDescendant(A,ntLiteral));
+    N:=Named(Root,ntVariable,'InitialValue');AssertNotNil(N.FindNode(ntValue));
+    AssertTrue(N.FindNode(ntAbsolute)=nil);
+  finally Root.Free;end;
+end;
 procedure RunActualizationTests;
 begin
+  RunTest('AST.AbsoluteVariable',TestAbsoluteVariable);
+  RunTest('Modern.ReferenceTypeConsumption',TestReferenceTypeConsumption);
+  RunTest('Modern.NamedVariantTag',TestNamedVariantTag);
   RunTest('Literals.Boundaries',TestLiteralBoundaries);
   RunTest('Literals.Malformed',TestMalformedLiterals);
   RunTest('Modern.ClassStorage',TestClassStorage);

@@ -2417,8 +2417,11 @@ end;
 procedure TmwSimplePasPar.RecordVariantTag;
 begin
   Identifier;
-  if (TokenId = ptColon) then
+  if TokenId = ptColon then
+  begin
+    Expected(ptColon);
     Identifier;
+  end;
 end;
 
 
@@ -5706,7 +5709,6 @@ begin
     ptFunction:
       begin
         AnonymousMethodTypeFunction;
-        NextToken;
         if TokenID = ptRoundOpen then
           FormalParameterList;
         Expected(ptColon);
@@ -5715,7 +5717,6 @@ begin
     ptProcedure:
       begin
         AnonymousMethodTypeProcedure;
-        NextToken;
         if TokenID = ptRoundOpen then
           FormalParameterList;
       end;

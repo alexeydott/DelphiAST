@@ -515,11 +515,13 @@ end;
 procedure TPasSyntaxTreeBuilder.AnonymousMethodTypeProcedure;
 begin
   FStack.Peek.Attribute[anKind]:= Lexer.Token; //procedure
+  inherited;
 end;
 
 procedure TPasSyntaxTreeBuilder.AnonymousMethodTypeFunction;
 begin
   FStack.Peek.Attribute[anKind]:= Lexer.Token; //function
+  inherited;
 end;
 
 procedure TPasSyntaxTreeBuilder.ArrayBounds;
@@ -3207,20 +3209,12 @@ begin
 end;
 
 procedure TPasSyntaxTreeBuilder.VarAbsolute;
-var
-  AbsoluteNode: TSyntaxNode;
-  ValueNode: TSyntaxNode;
 begin
-  AbsoluteNode:= TSyntaxNode.Create(ntUnknown);
-  FStack.Push(AbsoluteNode);
+  FStack.Push(ntAbsolute);
   try
     inherited;
   finally
     FStack.Pop;
-    ValueNode:= AbsoluteNode.ExtractChild(AbsoluteNode.ChildNode[0]);
-    ValueNode.Attribute[anKind]:= AttributeValues[atAbsolute];
-    AbsoluteNode.Free;
-    FStack.Peek.AddChild(ValueNode);
   end;
 end;
 
@@ -3304,9 +3298,6 @@ begin
 end;
 
 procedure TPasSyntaxTreeBuilder.RearrangeVarSection(const VarSect: TSyntaxNode);
-const
-  AbsolutePath: array[0..3] of TSyntaxNodeType = (
-    ntAbsolute, ntValue, ntExpression, ntIdentifier);
 var
   Temp: TSyntaxNode;
   VarList, Variable, TypeInfo, ValueInfo: TSyntaxNode;
@@ -3329,9 +3320,9 @@ begin
           FStack.AddChild(ValueInfo.Clone)
         else
         begin
-          Temp := VarList.FindNode(AbsolutePath);
+          Temp := VarList.FindNode(ntAbsolute);
           if Assigned(Temp) then
-            FStack.AddChild(ntAbsolute).AddChild(Temp.Clone);
+            FStack.AddChild(Temp.Clone);
         end;
       finally
         FStack.Pop;

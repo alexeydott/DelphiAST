@@ -16,7 +16,7 @@ def run(executable, snippets, output, count, seed):
                   for p in sorted((snippets.parent/'InvalidSnippets').glob('*.pas'))]
         for i in range(count):
             values = ','.join(str(rng.randrange(1000)) for _ in range(rng.randrange(1, 10)))
-            s = f'unit Fuzz{i}; interface type TRec = record Value: Integer; end; implementation procedure Run; begin var a := [{values}]; for var x in a do begin if x > 5 then Continue; end; end; end.'
+            s = f'unit Fuzz{i}; interface type TCallback = reference to procedure(Value: Integer); TRec = record case Kind: Byte of 0:(Value: Integer); 1:(Other: Double); end; implementation procedure Run; begin var a := [{values}]; for var x in a do begin if x > 5 then Continue; end; end; end.'
             cases.append((s, True))
             # Focused literal grammar and truncation fuzzing.
             quote = chr(39) * rng.choice([3, 5, 7, 9])

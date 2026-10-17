@@ -17,6 +17,11 @@ type
   public
     FailReads: Boolean;
     function Read(var Buffer; Count: Longint): Longint; override;
+    {$IFNDEF FPC}
+    {$IF SizeOf(NativeInt) <> SizeOf(Longint)}
+    function Read(var Buffer; Count: NativeInt): NativeInt; override;
+    {$IFEND}
+    {$ENDIF}
   end;
 
 function TFailingReadStream.Read(var Buffer; Count: Longint): Longint;
@@ -25,6 +30,17 @@ begin
     raise EReadError.Create('Injected source read failure');
   Result := inherited Read(Buffer, Count);
 end;
+
+{$IFNDEF FPC}
+{$IF SizeOf(NativeInt) <> SizeOf(Longint)}
+function TFailingReadStream.Read(var Buffer; Count: NativeInt): NativeInt;
+begin
+  if FailReads then
+    raise EReadError.Create('Injected source read failure');
+  Result := inherited Read(Buffer, Count);
+end;
+{$IFEND}
+{$ENDIF}
 
 procedure SetMemorySource(Stream: TMemoryStream; const Source: AnsiString);
 begin

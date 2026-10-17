@@ -3,7 +3,7 @@ unit DelphiAST.Actualization.Tests;
 interface
 procedure RunActualizationTests;
 implementation
-uses Classes, SysUtils, SimpleParser.Lexer.Types, DelphiAST, DelphiAST.Classes, DelphiAST.Consts,
+uses Classes, SysUtils, SimpleParser.Lexer.Types, SimpleParser.Lexer, DelphiAST, DelphiAST.Classes, DelphiAST.Consts,
   SimpleParser, DelphiAST.TestFramework, DelphiAST.TestSupport, DelphiAST.Writer;
 type
   TStrictParser = class(TmwSimplePasPar)
@@ -168,8 +168,57 @@ begin
     AssertTrue(N.FindNode(ntAbsolute)=nil);
   finally Root.Free;end;
 end;
+procedure TestFindNodePathOverload;
+var Root,A,N:TSyntaxNode;
+begin
+  Root:=TSyntaxNode.Create(ntVariable);
+  try
+    A:=Root.AddChild(ntAbsolute);N:=A.AddChild(ntValue).AddChild(ntExpression).AddChild(ntIdentifier);
+    AssertTrue(Root.FindNode([ntAbsolute,ntValue,ntExpression,ntIdentifier])=N,'Array literal must select path lookup');
+    AssertTrue(Root.FindNode([ntAbsolute,ntUnknown,ntExpression,ntIdentifier])=N);
+    AssertTrue(Root.FindNodeOfTypes([ntValue,ntAbsolute])=A);
+    AssertTrue(Root.FindNode([])=nil);
+  finally Root.Free;end;
+end;
+procedure TestClassStorageBoundaries;
+var Root,N:TSyntaxNode;
+  procedure Check(const S,Expected:string);
+  begin N:=Named(Root,ntField,S);AssertNotNil(N,S);AssertEquals(Expected,N.GetAttribute(anClass),S);end;
+begin
+  Root:=ParseSource('unit Storage; interface type TOuter=class public class var A:record Inner:Integer; end; B:Integer; private C:Integer; public D:Integer; end; TNext=class E:Integer; end; implementation end.');
+  try
+    Check('A','true');Check('B','true');Check('Inner','');
+    Check('C','');Check('D','');Check('E','');
+  finally Root.Free;end;
+end;
+procedure TestOperatorKind;
+var Root,N:TSyntaxNode;
+begin
+  Root:=ParseSource('unit Operators; interface type TRec=record Value:Integer; class operator Add(const A,B:TRec):TRec; end; implementation class operator TRec.Add(const A,B:TRec):TRec; begin end; end.');
+  try
+    N:=Named(Root,ntMethod,'Add');AssertNotNil(N);AssertEquals('operator',N.GetAttribute(anKind));
+    N:=Named(Root,ntMethod,'TRec.Add');AssertNotNil(N);AssertEquals('operator',N.GetAttribute(anKind));
+  finally Root.Free;end;
+end;
+procedure TestIncludeLexerContext;
+var Lexer,CopyLexer:TmwBasePasLex;Handler:IIncludeHandler;
+begin
+  Lexer:=TmwBasePasLex.Create;CopyLexer:=TmwBasePasLex.Create;
+  try
+    Handler:=TTestIncludeHandler.Create(ResolveSnippetPath);
+    Lexer.IncludeHandler:=Handler;
+    Lexer.Origin:='{$I includefile.inc}';
+    AssertTrue(Lexer.FileName<>'','Include must provide a filename');
+    CopyLexer.InitFrom(Lexer);
+    AssertEquals(Lexer.FileName,CopyLexer.FileName,'Lookahead must retain include context');
+  finally CopyLexer.Free;Lexer.Free;end;
+end;
 procedure RunActualizationTests;
 begin
+  RunTest('Lexer.IncludeContext',TestIncludeLexerContext);
+  RunTest('AST.FindNodePathOverload',TestFindNodePathOverload);
+  RunTest('AST.ClassStorageBoundaries',TestClassStorageBoundaries);
+  RunTest('AST.OperatorKind',TestOperatorKind);
   RunTest('AST.AbsoluteVariable',TestAbsoluteVariable);
   RunTest('Modern.ReferenceTypeConsumption',TestReferenceTypeConsumption);
   RunTest('Modern.NamedVariantTag',TestNamedVariantTag);

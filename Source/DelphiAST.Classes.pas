@@ -62,7 +62,7 @@ type
     function ExtractChild(Typ: TSyntaxNodeType): TSyntaxNode; overload;
 
     function FindNode(Typ: TSyntaxNodeType): TSyntaxNode; overload;
-    function FindNode(const Types: TSyntaxNodeTypes): TSyntaxNode; overload;
+    function FindNodeOfTypes(const Types: TSyntaxNodeTypes): TSyntaxNode;
     // Searches for a node located along the path from the type of nodes
     // specified in the TypesPath parameter.
     // ntUnknown in the TypesPath parameter means a node of any type.
@@ -598,13 +598,13 @@ function TSyntaxNode.FindNode(const TypesPath: array of TSyntaxNodeType): TSynta
   end;
 
 begin
-  if TypesPath[High(TypesPath)] <> ntUnknown then
+  if (Length(TypesPath) > 0) and (TypesPath[High(TypesPath)] <> ntUnknown) then
     Result := FindNodeRecursively(Self, TypesPath, Low(TypesPath))
   else
     Result := nil;
 end;
 
-function TSyntaxNode.FindNode(const Types: TSyntaxNodeTypes): TSyntaxNode;
+function TSyntaxNode.FindNodeOfTypes(const Types: TSyntaxNodeTypes): TSyntaxNode;
 var
   i: integer;
 begin

@@ -96,6 +96,7 @@ type
     procedure ClassField; override;
     procedure ClassForward; override;
     procedure ClassFunctionHeading; override;
+    procedure ClassOperatorHeading; override;
     procedure ClassHelper; override;
     procedure ClassMethod; override;
     procedure ClassMethodResolution; override;
@@ -163,6 +164,7 @@ type
     procedure ForStatementTo; override;
     procedure ForwardDeclaration; override;
     procedure FunctionHeading; override;
+    procedure FunctionMethodDeclaration; override;
     procedure FunctionMethodName; override;
     procedure FunctionProcedureName; override;
     procedure GotoStatement; override;
@@ -921,7 +923,11 @@ end;
 procedure TPasSyntaxTreeBuilder.ClassMethodOrProperty;
 begin
   FClassPrefix := False;
-  inherited;
+  try
+    inherited;
+  finally
+    FClassPrefix := False;
+  end;
 end;
 
 procedure TPasSyntaxTreeBuilder.ClassField;
@@ -1012,6 +1018,12 @@ procedure TPasSyntaxTreeBuilder.ClassForward;
 begin
   FStack.Peek.Attribute[anForwarded]:= AttributeValues[atTrue];
   FStack.Peek.Attribute[anType]:= AttributeValues[atClass];
+  inherited;
+end;
+
+procedure TPasSyntaxTreeBuilder.ClassOperatorHeading;
+begin
+  FStack.Peek.Attribute[anKind] := 'operator';
   inherited;
 end;
 
@@ -1896,6 +1908,12 @@ begin
   inherited;
 end;
 
+procedure TPasSyntaxTreeBuilder.FunctionMethodDeclaration;
+begin
+  if ExID = ptOperator then FStack.Peek.Attribute[anKind] := 'operator';
+  inherited;
+end;
+
 procedure TPasSyntaxTreeBuilder.FunctionHeading;
 begin
   FStack.Peek.Attribute[anKind]:= AttributeValues[atFunction];
@@ -2513,9 +2531,16 @@ begin
 end;
 
 procedure TPasSyntaxTreeBuilder.RecordType;
+var SavedClassPrefix:Boolean;
 begin
-  inherited RecordType;
-  MoveMembersToVisibilityNodes(FStack.Peek);
+  SavedClassPrefix := FClassPrefix;
+  FClassPrefix := False;
+  try
+    inherited RecordType;
+    MoveMembersToVisibilityNodes(FStack.Peek);
+  finally
+    FClassPrefix := SavedClassPrefix;
+  end;
 end;
 
 procedure TPasSyntaxTreeBuilder.RelativeOperator;

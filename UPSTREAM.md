@@ -65,3 +65,7 @@ method parameters are retained structurally. Consumers should inspect those
 nodes rather than relying exclusively on the parent's `anName` attribute.
 `LineSeq` is initialized and binary serialization revision 1.0.1 preserves it;
 the reader also accepts the previous 1.0.0 layout for the current node enums.
+
+### Node lookup API
+
+`FindNode([ntAbsolute, ntValue, ntExpression, ntIdentifier])` follows an ordered child path. To find the first direct child whose type belongs to a set, use `FindNodeOfTypes([ntValue, ntAbsolute])`. The set overload was renamed because Delphi cannot unambiguously resolve array literals against both overloads. `FindNode(TSyntaxNodeType)` is unchanged.

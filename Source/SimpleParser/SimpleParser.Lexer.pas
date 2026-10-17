@@ -1407,6 +1407,7 @@ begin
   FBuffer.Run := SharedBuffer.Run;
   FBuffer.LineNumber := SharedBuffer.LineNumber;
   FBuffer.LinePos := SharedBuffer.LinePos;
+  FBuffer.FileName := SharedBuffer.FileName;
   FBuffer.SharedBuffer := True;
 
   Next;

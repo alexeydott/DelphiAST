@@ -16,6 +16,7 @@ type
   TBinarySerializer = class
   strict private
     FStream     : TStream;
+    FVersion    : Integer;
     FStringList : TStringList;
     FStringTable: TDictionary<string,integer>;
   strict protected
@@ -54,8 +55,10 @@ function TBinarySerializer.CheckVersion: boolean;
 var
   version: Integer;
 begin
+  version := 0;
   Result := (FStream.Read(version, 4) = 4)
-        and ((version AND $FFFF0000) = $01000000);
+        and ((version = $01000000) or (version = $01000001));
+  FVersion := version;
 end;
 
 function TBinarySerializer.CreateNode(nodeClass: TNodeClass; nodeType: TSyntaxNodeType):
@@ -116,6 +119,11 @@ begin
     if (not ReadNumber(num)) or (num > cardinal(High(integer))) then
       Exit;
     Node.Line := num;
+    if FVersion >= $01000001 then
+    begin
+      if (not ReadNumber(num)) or (num > cardinal(High(Integer))) then Exit;
+      Node.LineSeq := num;
+    end;
 
     case nodeClass of
       ntCompound:
@@ -227,7 +235,7 @@ begin
     FStream := Stream;
     if FStream.Write(CSignature[1], Length(CSignature)) <> Length(CSignature) then
       Exit;
-    version := $01000000;
+    version := $01000001;
     if FStream.Write(version, 4) <> 4 then
       Exit;
     if not WriteNode(Root) then
@@ -258,6 +266,7 @@ begin
   if not WriteNumber(Ord(Node.Typ)) then Exit;
   if not WriteNumber(Node.Col) then Exit;
   if not WriteNumber(Node.Line) then Exit;
+  if not WriteNumber(Node.LineSeq) then Exit;
 
   case nodeClass of
     ntCompound:

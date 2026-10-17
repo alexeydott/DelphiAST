@@ -1,5 +1,14 @@
 [![](https://tokei.rs/b1/github/RomanYankovsky/DelphiAST?category=lines)](https://github.com/RomanYankovsky/DelphiAST) [![](https://tokei.rs/b1/github/RomanYankovsky/DelphiAST?category=code)](https://github.com/RomanYankovsky/DelphiAST) [![](https://tokei.rs/b1/github/RomanYankovsky/DelphiAST?category=files)](https://github.com/RomanYankovsky/DelphiAST)
-### Abstract Syntax Tree Builder for Delphi 
+### Abstract Syntax Tree Builder for Delphi
+
+This maintained fork integrates current upstream syntax fixes and selected
+community contributions. See [upstream compatibility and attribution](UPSTREAM.md)
+for supported changes and API notes.
+
+Clone with `git clone --recurse-submodules https://github.com/alexeydott/DelphiAST.git`.
+On Windows, run `Test/Run-Tests.ps1` to build and test with RAD Studio 12 and 13
+on Win32 and Win64, including deterministic grammar and mutation fuzzing.
+The shared FPC/Linux suite also runs in [GitHub Actions](https://github.com/alexeydott/DelphiAST/actions).
 With DelphiAST you can take real Delphi code and get an abstract syntax tree. One unit at time and without a symbol table though. 
 
 FreePascal and Lazarus compatible.

@@ -2082,11 +2082,22 @@ begin
 end;
 
 procedure TmwBasePasLex.IntegerProc;
+var HasDigit: Boolean;
 begin
   Inc(FBuffer.Run);
   FTokenID := ptIntegerConst;
+  HasDigit := False;
   while CharInSet(FBuffer.Buf[FBuffer.Run], ['0'..'9', 'A'..'F', 'a'..'f', '_']) do
+  begin
+    if FBuffer.Buf[FBuffer.Run] <> '_' then HasDigit := True;
     Inc(FBuffer.Run);
+  end;
+  if not HasDigit then
+  begin
+    FTokenID := ptError;
+    if Assigned(FOnMessage) then
+      FOnMessage(Self, meError, 'Hexadecimal digit expected', PosXY.X, PosXY.Y);
+  end;
 end;
 
 function TmwBasePasLex.IsDefined(const ADefine: string): Boolean;
@@ -2557,6 +2568,7 @@ begin
           end;
         #0:
           begin
+            FTokenID := ptError;
             if Assigned(FOnMessage) then
               FOnMessage(Self, meError, 'Unterminated string', PosXY.X, PosXY.Y);
             Break;
@@ -2571,8 +2583,12 @@ begin
             end;
             if EndQuoteCount = StartQuoteCount then
             begin
-              if not NewLine and Assigned(FOnMessage) then
-                FOnMessage(Self, meError, 'Non-whitespace characters before closing quotes', PosXY.X, PosXY.Y);
+              if not NewLine then
+              begin
+                FTokenID := ptError;
+                if Assigned(FOnMessage) then
+                  FOnMessage(Self, meError, 'Non-whitespace characters before closing quotes', PosXY.X, PosXY.Y);
+              end;
               Break;
             end;
             NewLine := False;
@@ -2587,23 +2603,22 @@ begin
   else
   begin // singleline string
     repeat
-      Inc(FBuffer.Run);
       case FBuffer.Buf[FBuffer.Run] of
         #0, #10, #13:
           begin
+            FTokenID := ptError;
             if Assigned(FOnMessage) then
               FOnMessage(Self, meError, 'Unterminated string', PosXY.X, PosXY.Y);
-            Break;
+            Exit;
           end;
         #39:
           begin
-            while (FBuffer.Buf[FBuffer.Run] = #39) and (FBuffer.Buf[FBuffer.Run + 1] = #39) do
-            begin
-              Inc(FBuffer.Run, 2);
-            end;
+            if FBuffer.Buf[FBuffer.Run + 1] <> #39 then Break;
+            Inc(FBuffer.Run);
           end;
       end;
-    until FBuffer.Buf[FBuffer.Run] = #39;
+      Inc(FBuffer.Run);
+    until False;
     if FBuffer.Buf[FBuffer.Run] = #39 then
     begin
       Inc(FBuffer.Run);

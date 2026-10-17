@@ -86,8 +86,46 @@ begin
     Node.ExtractChild(Child);AssertTrue(Child.ParentNode=nil);Node.AddChild(Child);
   finally Node.Free;end;
 end;
+procedure TestLiteralBoundaries;
+var Root,N:TSyntaxNode; Q,S:string; I:Integer;
+begin
+  Q:=Chr(39);
+  for I:=1 to 3 do begin
+    case I of 1:S:=#10; 2:S:=#13#10; else S:=#13; end;
+    Root:=ParseSource('unit Literals; interface const Text='+Q+Q+Q+S+
+      '  a '+Q+Q+' b'+S+'  '+Q+Q+Q+'; After=$fF_Ff; implementation end.');
+    try
+      N:=FindDescendant(Root,ntLiteral);AssertNotNil(N);
+      AssertEquals(S+'  a '+Q+Q+' b'+S+'  ',TValuedSyntaxNode(N).Value,'Multiline source content');
+      N:=Named(Root,ntConstant,'After');AssertNotNil(N,'Declaration after multiline string');
+      N:=FindDescendant(N,ntLiteral);AssertNotNil(N);
+      AssertEquals('$fF_Ff',TValuedSyntaxNode(N).Value,'Hex spelling must be preserved');
+    finally Root.Free;end;
+  end;
+  Root:=ParseSource('unit HexValues; interface const A=$0; B=$FFFFFFFF; C=$FFFFFFFFFFFFFFFF; D=-$80000000; implementation end.');
+  Root.Free;
+end;
+procedure TestMalformedLiterals;
+var Q:string;
+  procedure Reject(const S:string);
+  var Root:TSyntaxNode; Rejected:Boolean;
+  begin
+    Root:=nil;Rejected:=False;
+    try Root:=ParseSource('unit BadLiteral; interface const A='+S+'; implementation end.');
+    except on ESyntaxTreeException do Rejected:=True;end;
+    Root.Free;AssertTrue(Rejected,'Malformed literal accepted: '+S);
+  end;
+begin
+  Q:=Chr(39);
+  Reject('$'); Reject('$_'); Reject(Q); Reject(Q+'unterminated');
+  Reject(Q+Q+Q+#10+'text');
+  Reject(Q+Q+Q+#10+'text'+Q+Q+Q);
+  Reject(Q+Q+Q+#10+'text'+#10+Q+Q);
+end;
 procedure RunActualizationTests;
 begin
+  RunTest('Literals.Boundaries',TestLiteralBoundaries);
+  RunTest('Literals.Malformed',TestMalformedLiterals);
   RunTest('Modern.ClassStorage',TestClassStorage);
   RunTest('Modern.RootKinds',TestRootKinds);
   RunTest('Modern.MalformedHeaders',TestMalformedHeaders);

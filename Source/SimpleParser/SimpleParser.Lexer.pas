@@ -74,10 +74,16 @@ type
   TmwBasePasLex = class;
   TDirectiveEvent = procedure(Sender: TmwBasePasLex) of object;
   TCommentEvent = procedure(Sender: TObject; const Text: string) of object;
+  EConditionalExpressionError = class(Exception);
+  // Return True when the declaration's visibility is known, and set ADeclared.
+  // The lexer has no symbol table: defines are not Delphi declarations.
+  TResolveDeclarationEvent = function(Sender: TmwBasePasLex;
+    const Identifier: string; out ADeclared: Boolean): Boolean of object;
 
   PDefineRec = ^TDefineRec;
   TDefineRec = record
     Defined: Boolean;
+    ElseSeen: Boolean;
     StartCount: Integer;
     Next: PDefineRec;
   end;
@@ -130,6 +136,7 @@ type
     FScopedEnums: Boolean;
     FIncludeHandler: IIncludeHandler;
     FOnComment: TCommentEvent;
+    FOnResolveDeclaration: TResolveDeclarationEvent;
     FLineSeq: Integer;
 
     function KeyHash: Integer;
@@ -286,14 +293,16 @@ type
     function GetIsOrdinalType: Boolean;
     function GetGenID: TptTokenKind;
 
+    procedure ResetConditionalStack;
     procedure EnterDefineBlock(ADefined: Boolean);
     procedure ExitDefineBlock;
+    procedure ProcessDirective;
     procedure CloneDefinesFrom(ALexer: TmwBasePasLex);
     procedure DoProcTable(AChar: Char);
     function IsIdentifiers(AChar: Char): Boolean; inline;
     function HashValue(AChar: Char): Integer; inline;
     function EvaluateComparison(AValue1: Extended; const AOper: String; AValue2: Extended): Boolean;
-    function EvaluateConditionalExpression(const AParams: String; StartResult: boolean = false): Boolean;
+    function EvaluateConditionalExpression(const AParams: String): Boolean;
     procedure IncludeFile;
     function GetIncludeFileNameFromToken(const IncludeToken: string): string;
     function GetOrigin: string;
@@ -352,6 +361,8 @@ type
     property IsMulOperator: Boolean read GetIsMulOperator;
     property IsCompilerDirective: Boolean read GetIsCompilerDirective;
     property OnComment: TCommentEvent read FOnComment write FOnComment;
+    property OnResolveDeclaration: TResolveDeclarationEvent
+      read FOnResolveDeclaration write FOnResolveDeclaration;
     property OnMessage: TMessageEvent read FOnMessage write FOnMessage;
     property OnCompDirect: TDirectiveEvent read FOnCompDirect write FOnCompDirect;
     property OnDefineDirect: TDirectiveEvent read FOnDefineDirect write FOnDefineDirect;
@@ -398,10 +409,7 @@ type
 implementation
 
 uses
-  StrUtils;
-
-type
-  TmwPasLexExpressionEvaluation = (leeNone, leeAnd, leeOr, leeXor);
+  StrUtils, Math;
 
 procedure MakeIdentTable;
 var
@@ -427,7 +435,7 @@ begin
   Result := FBuffer.Buf[RunAhead];
 end;
 
-procedure TmwBasePasLex.ClearDefines;
+procedure TmwBasePasLex.ResetConditionalStack;
 var
   Frame: PDefineRec;
 begin
@@ -437,8 +445,13 @@ begin
     FTopDefineRec := Frame^.Next;
     Dispose(Frame);
   end;
-  FDefines := nil;
   FDefineStack := 0;
+end;
+
+procedure TmwBasePasLex.ClearDefines;
+begin
+  ResetConditionalStack;
+  FDefines := nil;
 end;
 
 procedure TmwBasePasLex.CloneDefinesFrom(ALexer: TmwBasePasLex);
@@ -447,6 +460,9 @@ var
 begin
   ClearDefines;
   FDefines := Copy(ALexer.FDefines);
+  FUseDefines := ALexer.FUseDefines;
+  FOnResolveDeclaration := ALexer.FOnResolveDeclaration;
+  FIncludeHandler := ALexer.FIncludeHandler;
   FDefineStack := ALexer.FDefineStack;
 
   Frame := nil;
@@ -460,6 +476,7 @@ begin
     else
       LastFrame^.Next := Frame;
     Frame^.Defined := SourceFrame^.Defined;
+    Frame^.ElseSeen := SourceFrame^.ElseSeen;
     Frame^.StartCount := SourceFrame^.StartCount;
     LastFrame := Frame;
 
@@ -1339,11 +1356,15 @@ begin
 end;
 
 destructor TmwBasePasLex.Destroy;
+var
+  OldBuffer: PBufferRec;
 begin
-  if not FBuffer.SharedBuffer then
-    FreeMem(FBuffer.Buf);
-
-  Dispose(FBuffer);
+  while Assigned(FBuffer) do
+  begin
+    OldBuffer := FBuffer;
+    FBuffer := FBuffer.Next;
+    DisposeBuffer(OldBuffer);
+  end;
 
   ClearDefines; //If we don't do this, we get a memory leak
   inherited Destroy;
@@ -1373,7 +1394,19 @@ begin
 end;
 
 procedure TmwBasePasLex.SetOrigin(const NewValue: string);
+var
+  OldBuffer: PBufferRec;
 begin
+  while Assigned(FBuffer.Next) do
+  begin
+    OldBuffer := FBuffer;
+    FBuffer := FBuffer.Next;
+    DisposeBuffer(OldBuffer);
+  end;
+  if not FBuffer.SharedBuffer and Assigned(FBuffer.Buf) then
+    FreeMem(FBuffer.Buf);
+  FBuffer.Buf := nil;
+  FBuffer.SharedBuffer := False;
   BufferSize := (Length(NewValue) + 1) * SizeOf(Char);
 
   GetMem(FBuffer.Buf, BufferSize);
@@ -1391,26 +1424,44 @@ end;
 
 procedure TmwBasePasLex.SetSharedBuffer(SharedBuffer: PBufferRec);
 var
-  NextBuffer: PBufferRec;
+  FirstBuffer, LastBuffer, NewBuffer, SourceBuffer, OldBuffer: PBufferRec;
 begin
-  while Assigned(FBuffer.Next) do
-  begin
-    NextBuffer := FBuffer;
-    FBuffer := FBuffer.Next;
-    DisposeBuffer(NextBuffer);
+  // Share only the immutable character storage. Lookahead owns its frame
+  // records, including the saved positions and filenames of include parents.
+  FirstBuffer := nil;
+  LastBuffer := nil;
+  SourceBuffer := SharedBuffer;
+  try
+    while Assigned(SourceBuffer) do
+    begin
+      New(NewBuffer);
+      NewBuffer^ := SourceBuffer^;
+      NewBuffer.SharedBuffer := True;
+      NewBuffer.Next := nil;
+      if LastBuffer = nil then
+        FirstBuffer := NewBuffer
+      else
+        LastBuffer.Next := NewBuffer;
+      LastBuffer := NewBuffer;
+      SourceBuffer := SourceBuffer.Next;
+    end;
+  except
+    while Assigned(FirstBuffer) do
+    begin
+      OldBuffer := FirstBuffer;
+      FirstBuffer := FirstBuffer.Next;
+      DisposeBuffer(OldBuffer);
+    end;
+    raise;
   end;
 
-  if not FBuffer.SharedBuffer and Assigned(FBuffer.Buf) then
-    FreeMem(FBuffer.Buf);
-
-  FBuffer.Buf := SharedBuffer.Buf;
-  FBuffer.Run := SharedBuffer.Run;
-  FBuffer.LineNumber := SharedBuffer.LineNumber;
-  FBuffer.LinePos := SharedBuffer.LinePos;
-  FBuffer.FileName := SharedBuffer.FileName;
-  FBuffer.SharedBuffer := True;
-
-  Next;
+  while Assigned(FBuffer) do
+  begin
+    OldBuffer := FBuffer;
+    FBuffer := FBuffer.Next;
+    DisposeBuffer(OldBuffer);
+  end;
+  FBuffer := FirstBuffer;
 end;
 
 procedure TmwBasePasLex.AddDefine(const ADefine: string);
@@ -1567,125 +1618,136 @@ begin
     else
       Inc(FBuffer.Run);
     end;
+  if FTokenID = ptBorComment then
+  begin
+    if Assigned(FOnComment) then
+    begin
+      SetString(CommentText, PChar(@FBuffer.Buf[BeginRun]), FBuffer.Run - BeginRun - 1);
+      DoOnComment(CommentText);
+    end;
+  end
+  else
+    ProcessDirective;
+end;
+
+procedure TmwBasePasLex.ProcessDirective;
+begin
+  // Both {$...} and (*$...*) have identical conditional semantics.
+  if ((FBuffer.Buf[FTokenPos] = '{') and
+      (FBuffer.Buf[FBuffer.Run - 1] <> '}')) or
+    ((FBuffer.Buf[FTokenPos] = '(') and
+      ((FBuffer.Run - FTokenPos < 5) or
+       (FBuffer.Buf[FBuffer.Run - 2] <> '*') or
+       (FBuffer.Buf[FBuffer.Run - 1] <> ')'))) then
+    raise EConditionalExpressionError.Create('Unterminated compiler directive');
+
   case FTokenID of
-    PtBorComment:
-      begin
-        if Assigned(FOnComment) then
-        begin
-          SetString(CommentText, PChar(@FBuffer.Buf[BeginRun]), FBuffer.Run - BeginRun - 1);
-          DoOnComment(CommentText);
-        end;
-      end;
-    PtCompDirect:
-      begin
-        if Assigned(FOnCompDirect) then
-          FOnCompDirect(Self);
-      end;
-    PtDefineDirect:
+    ptCompDirect:
+      if Assigned(FOnCompDirect) then
+        FOnCompDirect(Self);
+    ptDefineDirect:
       begin
         if FUseDefines and (FDefineStack = 0) then
           AddDefine(DirectiveParam);
         if Assigned(FOnDefineDirect) then
           FOnDefineDirect(Self);
       end;
-    PtElseDirect:
+    ptElseDirect:
       begin
         if FUseDefines then
         begin
-          if FTopDefineRec <> nil then
-          begin
-            if FTopDefineRec^.Defined then
-              Inc(FDefineStack)
-            else
-              if FDefineStack > 0 then
-                Dec(FDefineStack);
-          end;
+          if FTopDefineRec = nil then
+            raise EConditionalExpressionError.Create('ELSE without a matching IF');
+          if FTopDefineRec^.ElseSeen then
+            raise EConditionalExpressionError.Create('Duplicate ELSE directive');
+          FTopDefineRec^.ElseSeen := True;
+          FDefineStack := FTopDefineRec^.StartCount;
+          if FTopDefineRec^.Defined then
+            Inc(FDefineStack)
+          else
+            FTopDefineRec^.Defined := True;
         end;
         if Assigned(FOnElseDirect) then
           FOnElseDirect(Self);
       end;
-    PtEndIfDirect:
+    ptEndIfDirect:
       begin
         if FUseDefines then
           ExitDefineBlock;
         if Assigned(FOnEndIfDirect) then
           FOnEndIfDirect(Self);
       end;
-    PtIfDefDirect:
+    ptIfDefDirect:
       begin
         if FUseDefines then
           EnterDefineBlock(IsDefined(DirectiveParam));
         if Assigned(FOnIfDefDirect) then
           FOnIfDefDirect(Self);
       end;
-    PtIfNDefDirect:
+    ptIfNDefDirect:
       begin
         if FUseDefines then
           EnterDefineBlock(not IsDefined(DirectiveParam));
         if Assigned(FOnIfNDefDirect) then
           FOnIfNDefDirect(Self);
       end;
-    PtIfOptDirect:
+    ptIfOptDirect:
       begin
         if FUseDefines then
           EnterDefineBlock(False);
         if Assigned(FOnIfOptDirect) then
           FOnIfOptDirect(Self);
       end;
-    PtIfDirect:
+    ptIfDirect:
       begin
         if FUseDefines then
-          EnterDefineBlock(EvaluateConditionalExpression(DirectiveParam));
+          if FDefineStack = 0 then
+            EnterDefineBlock(EvaluateConditionalExpression(DirectiveParam))
+          else
+            EnterDefineBlock(False);
         if Assigned(FOnIfDirect) then
           FOnIfDirect(Self);
       end;
-    PtIfEndDirect:
+    ptIfEndDirect:
       begin
         if FUseDefines then
           ExitDefineBlock;
         if Assigned(FOnIfEndDirect) then
           FOnIfEndDirect(Self);
       end;
-    PtElseIfDirect:
+    ptElseIfDirect:
       begin
         if FUseDefines then
         begin
-          if FTopDefineRec <> nil then
-          begin
-            if FTopDefineRec^.Defined then
-              FDefineStack := FTopDefineRec.StartCount + 1
-            else
+          if FTopDefineRec = nil then
+            raise EConditionalExpressionError.Create('ELSEIF without a matching IF');
+          if FTopDefineRec^.ElseSeen then
+            raise EConditionalExpressionError.Create('ELSEIF after ELSE');
+          FDefineStack := FTopDefineRec^.StartCount + 1;
+          if (FTopDefineRec^.StartCount = 0) and not FTopDefineRec^.Defined then
+            if EvaluateConditionalExpression(DirectiveParam) then
             begin
-              FDefineStack := FTopDefineRec.StartCount;
-                if EvaluateConditionalExpression(DirectiveParam) then
-                  FTopDefineRec^.Defined := True
-                else
-                  FDefineStack := FTopDefineRec.StartCount + 1
+              FTopDefineRec^.Defined := True;
+              FDefineStack := FTopDefineRec^.StartCount;
             end;
-          end;
         end;
         if Assigned(FOnElseIfDirect) then
           FOnElseIfDirect(Self);
       end;
-    PtIncludeDirect:
+    ptIncludeDirect:
       begin
-//        if Assigned(FOnIncludeDirect) then
-//          FOnIncludeDirect(Self);
-        if Assigned(FIncludeHandler) and (FDefineStack = 0) then
+        if Assigned(FIncludeHandler) and (not FUseDefines or (FDefineStack = 0)) then
           IncludeFile
         else
           Next;
       end;
-    PtResourceDirect:
-      begin
-        if Assigned(FOnResourceDirect) then
-          FOnResourceDirect(Self);
-      end;
-    PtScopedEnumsDirect:
-      begin
+    ptResourceDirect:
+      if Assigned(FOnResourceDirect) then
+        FOnResourceDirect(Self);
+    ptScopedEnumsDirect:
+      if not FUseDefines or (FDefineStack = 0) then
         UpdateScopedEnums;
-      end;
-    PtUndefDirect:
+    ptUndefDirect:
       begin
         if FUseDefines and (FDefineStack = 0) then
           RemoveDefine(DirectiveParam);
@@ -1697,288 +1759,313 @@ end;
 
 function TmwBasePasLex.EvaluateComparison(AValue1: Extended; const AOper: String; AValue2: Extended): Boolean;
 begin
-  case AOper[1] of
-    '=': Result := (AValue1 = AValue2);
-    '<': begin
-      if (AOper = '<') then Result := AValue1 < AValue2
-      else if (AOper = '<>') then Result := AValue1 <> AValue2
-      else Result:= AValue1 <= AValue2;
-    end;
-    '>': begin
-      if (AOper = '>') then Result := AValue1 > AValue2
-      else Result:= AValue1 >= AValue2;
-    end;
-    else Result:= false;
+  if AOper = '=' then
+    Result := AValue1 = AValue2
+  else if AOper = '<>' then
+    Result := AValue1 <> AValue2
+  else if AOper = '<' then
+    Result := AValue1 < AValue2
+  else if AOper = '<=' then
+    Result := AValue1 <= AValue2
+  else if AOper = '>' then
+    Result := AValue1 > AValue2
+  else if AOper = '>=' then
+    Result := AValue1 >= AValue2
+  else
+    raise EConditionalExpressionError.Create('Invalid comparison operator: ' + AOper);
+end;
+
+function TmwBasePasLex.EvaluateConditionalExpression(const AParams: string): Boolean;
+type
+  TExpressionToken = (etEnd, etIdentifier, etNumber, etOpen, etClose,
+    etCompare, etPlus, etMinus);
+  TValueKind = (vkBoolean, vkInteger, vkReal);
+  TExpressionValue = record
+    Kind: TValueKind;
+    BooleanValue: Boolean;
+    IntegerValue: Int64;
+    RealValue: Extended;
   end;
-end;
-
-function TmwBasePasLex.EvaluateConditionalExpression(const AParams: string; StartResult: boolean = false): Boolean;
 var
-  LParams: string;
-  i: integer;
-  NextPart: string;
+  Text, TokenText: string;
+  Position, TokenPosition, Depth: Integer;
+  TokenKind: TExpressionToken;
+  Settings: TFormatSettings;
+  Value: TExpressionValue;
 
-function ExtractNextPart(StartPos: integer; BracketCount: integer = 0): string;
-var
-  i: integer;
-  BracketFound: boolean;
-  TokenFound: boolean;
-  InternalBracketCount: integer;
-begin
-  i:= 1;
-  BracketFound:= false;
-  TokenFound:= false;
-  InternalBracketCount:= 0;//BracketCount;
-  while i < Length(LParams) do begin
-    case LParams[i] of
-      '(': begin
-        Inc(InternalBracketCount);
-        BracketFound:= true;
-      end;
-      ')': begin
-        Dec(InternalBracketCount);
-      end;
-      else TokenFound:= true;
-    end;
-    if (InternalBracketCount = 0) and BracketFound and TokenFound then begin
-      break;
-    end;
-    Inc(i);
+  procedure Fail(const Message: string);
+  begin
+    raise EConditionalExpressionError.CreateFmt(
+      'Conditional expression at character %d: %s', [TokenPosition, Message]);
   end;
-  Result:= MidStr(LParams, StartPos, i-((StartPos-1)*2));
-end;
 
-//Assumes the first char is part of a number
-function ExtractNumber: string;
-begin
-  i:= 1;
-  while i <= Length(LParams) do begin
-    if CharInSet(LParams[i], ['0'..'9','-','.']) then Inc(i)
-    else begin
-      Dec(i);
-      Break;
+  function CurrentChar: Char;
+  begin
+    if Position <= Length(Text) then
+      Result := Text[Position]
+    else
+      Result := #0;
+  end;
+
+  procedure NextToken;
+  begin
+    while CharInSet(CurrentChar, [#1..#32]) do
+      Inc(Position);
+    TokenPosition := Position;
+    case CurrentChar of
+      #0: TokenKind := etEnd;
+      '(': begin TokenKind := etOpen; Inc(Position); end;
+      ')': begin TokenKind := etClose; Inc(Position); end;
+      '+': begin TokenKind := etPlus; Inc(Position); end;
+      '-': begin TokenKind := etMinus; Inc(Position); end;
+      '=', '<', '>':
+        begin
+          TokenKind := etCompare;
+          Inc(Position);
+          if ((Text[TokenPosition] = '<') and CharInSet(CurrentChar, ['=', '>'])) or
+            ((Text[TokenPosition] = '>') and (CurrentChar = '=')) then
+            Inc(Position);
+        end;
+      '0'..'9':
+        begin
+          TokenKind := etNumber;
+          while CharInSet(CurrentChar, ['0'..'9']) do Inc(Position);
+          if CurrentChar = '.' then
+          begin
+            Inc(Position);
+            if not CharInSet(CurrentChar, ['0'..'9']) then
+              Fail('Expected digits after the decimal point');
+            while CharInSet(CurrentChar, ['0'..'9']) do Inc(Position);
+          end;
+          if CurrentChar = 'E' then
+          begin
+            Inc(Position);
+            if CharInSet(CurrentChar, ['+', '-']) then Inc(Position);
+            if not CharInSet(CurrentChar, ['0'..'9']) then
+              Fail('Expected exponent digits');
+            while CharInSet(CurrentChar, ['0'..'9']) do Inc(Position);
+          end;
+        end;
+    else
+      if IsIdentifiers(CurrentChar) then
+      begin
+        TokenKind := etIdentifier;
+        repeat Inc(Position); until not IsIdentifiers(CurrentChar);
+      end
+      else
+        Fail('Unsupported character "' + CurrentChar + '"');
     end;
-  end; {while}
-  Result:= LeftStr(LParams, i);
-end;
+    TokenText := Copy(Text, TokenPosition, Position - TokenPosition);
+  end;
 
-var
-  LDefine: string;
-  IsComVer, IsRTLVer: boolean;
-  LOper: string;
-  Value: Extended;
-  MyFormatSettings: TFormatSettings;
+  function BooleanValue(AValue: Boolean): TExpressionValue;
+  begin
+    Result.Kind := vkBoolean;
+    Result.BooleanValue := AValue;
+    Result.IntegerValue := 0;
+    Result.RealValue := 0;
+  end;
+
+  procedure RequireBoolean(const AValue: TExpressionValue);
+  begin
+    if AValue.Kind <> vkBoolean then
+      Fail('Expected a Boolean operand');
+  end;
+
+  function AsReal(const AValue: TExpressionValue): Extended;
+  begin
+    if AValue.Kind = vkInteger then
+      Result := AValue.IntegerValue
+    else
+      Result := AValue.RealValue;
+  end;
+
+  function ParseExpression(Evaluate: Boolean): TExpressionValue; forward;
+
+  function ParseFactor(Evaluate: Boolean): TExpressionValue;
+  var
+    Name, Identifier: string;
+    Negative, DeclaredValue: Boolean;
+  begin
+    Inc(Depth);
+    try
+      if Depth > 256 then
+        Fail('Expression nesting is too deep');
+      Result := BooleanValue(False);
+      case TokenKind of
+        etOpen:
+          begin
+            NextToken;
+            Result := ParseExpression(Evaluate);
+            if TokenKind <> etClose then Fail('Expected ")"');
+            NextToken;
+          end;
+        etPlus, etMinus:
+          begin
+            Negative := TokenKind = etMinus;
+            NextToken;
+            Result := ParseFactor(Evaluate);
+            if Result.Kind = vkBoolean then Fail('Expected a numeric operand');
+            if Negative then
+              if Result.Kind = vkInteger then
+                Result.IntegerValue := -Result.IntegerValue
+              else
+                Result.RealValue := -Result.RealValue;
+          end;
+        etNumber:
+          begin
+            if (Pos('.', TokenText) = 0) and (Pos('E', TokenText) = 0) then
+            begin
+              Result.Kind := vkInteger;
+              if not TryStrToInt64(TokenText, Result.IntegerValue) then
+                Fail('Integer literal is out of range');
+            end
+            else
+            begin
+              Result.Kind := vkReal;
+              if not TryStrToFloat(TokenText, Result.RealValue, Settings) or
+                IsNan(Result.RealValue) or IsInfinite(Result.RealValue) then
+                Fail('Invalid or out-of-range real literal');
+            end;
+            NextToken;
+          end;
+        etIdentifier:
+          begin
+            Name := TokenText;
+            NextToken;
+            if Name = 'NOT' then
+            begin
+              Result := ParseFactor(Evaluate);
+              RequireBoolean(Result);
+              Result.BooleanValue := not Result.BooleanValue;
+            end
+            else if (Name = 'DEFINED') or (Name = 'DECLARED') then
+            begin
+              if TokenKind <> etOpen then Fail('Expected "(" after ' + Name);
+              NextToken;
+              if TokenKind <> etIdentifier then Fail('Expected an identifier');
+              Identifier := TokenText;
+              NextToken;
+              if TokenKind <> etClose then Fail('Expected ")" after identifier');
+              NextToken;
+              if Evaluate then
+                if Name = 'DEFINED' then
+                  Result := BooleanValue(IsDefined(Identifier))
+                else
+                begin
+                  DeclaredValue := IsDeclared(Identifier);
+                  Result := BooleanValue(DeclaredValue);
+                end;
+            end
+            else if Name = 'TRUE' then
+              Result := BooleanValue(True)
+            else if Name = 'FALSE' then
+              Result := BooleanValue(False)
+            else if (Name = 'COMPILERVERSION') or (Name = 'RTLVERSION') then
+            begin
+              Result.Kind := vkReal;
+              if Name = 'COMPILERVERSION' then
+                Result.RealValue := CompilerVersion
+              else
+                Result.RealValue := RTLVersion;
+            end
+            else
+              Fail('Unsupported constant or function "' + Name + '"');
+          end;
+      else
+        Fail('Expected an operand');
+      end;
+    finally
+      Dec(Depth);
+    end;
+  end;
+
+  function ParseTerm(Evaluate: Boolean): TExpressionValue;
+  var
+    Right: TExpressionValue;
+  begin
+    Result := ParseFactor(Evaluate);
+    while (TokenKind = etIdentifier) and (TokenText = 'AND') do
+    begin
+      RequireBoolean(Result);
+      NextToken;
+      Right := ParseFactor(Evaluate and Result.BooleanValue);
+      RequireBoolean(Right);
+      Result.BooleanValue := Result.BooleanValue and Right.BooleanValue;
+    end;
+  end;
+
+  function ParseSimpleExpression(Evaluate: Boolean): TExpressionValue;
+  var
+    Right: TExpressionValue;
+    IsOr: Boolean;
+  begin
+    Result := ParseTerm(Evaluate);
+    while (TokenKind = etIdentifier) and
+      ((TokenText = 'OR') or (TokenText = 'XOR')) do
+    begin
+      RequireBoolean(Result);
+      IsOr := TokenText = 'OR';
+      NextToken;
+      Right := ParseTerm(Evaluate and (not IsOr or not Result.BooleanValue));
+      RequireBoolean(Right);
+      if IsOr then
+        Result.BooleanValue := Result.BooleanValue or Right.BooleanValue
+      else
+        Result.BooleanValue := Result.BooleanValue xor Right.BooleanValue;
+    end;
+  end;
+
+  function ParseExpression(Evaluate: Boolean): TExpressionValue;
+  var
+    Right: TExpressionValue;
+    Oper: string;
+    Comparison: Integer;
+  begin
+    // Delphi precedence: NOT, AND, OR/XOR, then relational operators.
+    // Parentheses around version comparisons are therefore significant.
+    Result := ParseSimpleExpression(Evaluate);
+    if TokenKind = etCompare then
+    begin
+      Oper := TokenText;
+      NextToken;
+      Right := ParseSimpleExpression(Evaluate);
+      if (Result.Kind = vkBoolean) <> (Right.Kind = vkBoolean) then
+        Fail('Incompatible comparison operands');
+      Comparison := 0;
+      if Result.Kind = vkBoolean then
+      begin
+        if Ord(Result.BooleanValue) < Ord(Right.BooleanValue) then Comparison := -1;
+        if Ord(Result.BooleanValue) > Ord(Right.BooleanValue) then Comparison := 1;
+      end
+      else if (Result.Kind = vkInteger) and (Right.Kind = vkInteger) then
+      begin
+        if Result.IntegerValue < Right.IntegerValue then Comparison := -1;
+        if Result.IntegerValue > Right.IntegerValue then Comparison := 1;
+      end
+      else
+      begin
+        if AsReal(Result) < AsReal(Right) then Comparison := -1;
+        if AsReal(Result) > AsReal(Right) then Comparison := 1;
+      end;
+      Result := BooleanValue(EvaluateComparison(Comparison, Oper, 0));
+    end;
+  end;
 
 begin
-  IsComVer:= false;
-  IsRTLVer:= false;
-  LParams:= Trim(Uppercase(AParams));
-  Result:= StartResult;
-  while (Length(LParams) > 0) do begin
-    case LParams[1] of
-      '(': begin
-        while Pos('(', LParams) = 1 do begin
-          NextPart:= ExtractNextPart(2,1);
-          Result:= EvaluateConditionalExpression(NextPart, Result);
-          Delete(LParams, 1, Length(NextPart) + 2);
-          LParams:= TrimLeft(LParams);
-        end; {while}
-      end; {'('}
-      'O':if Pos('OR',LParams) = 1 then begin
-        Delete(LParams,1,2);
-        LParams:= TrimLeft(LParams);
-        NextPart:= ExtractNextPart(1);
-        if not(Result) then Result:= Result or EvaluateConditionalExpression(NextPart, Result);
-        Delete(LParams, 1, Length(NextPart));
-        LParams:= TrimLeft(LParams);
-      end else exit(false);
-      'A':if Pos('AND ',LParams) = 1 then begin
-        Delete(LParams,1,3);
-        LParams:= TrimLeft(LParams);
-        NextPart:= ExtractNextPart(1);
-        if(Result) then Result:= Result and EvaluateConditionalExpression(NextPart, Result);
-        Delete(LParams, 1, Length(NextPart));
-        LParams:= TrimLeft(LParams);
-      end else exit(false);
-      'X':if Pos('XOR',LParams) = 1 then begin
-        Delete(LParams,1,3);
-        LParams:= TrimLeft(LParams);
-        NextPart:= ExtractNextPart(1);
-        Result:= Result xor EvaluateConditionalExpression(NextPart, Result);
-        Delete(LParams, 1, Length(NextPart));
-        LParams:= TrimLeft(LParams);
-      end else exit(false);
-      'D': if Pos('DEFINED(',LParams) = 1 then begin
-        LDefine := Copy(LParams, 9, Pos(')', LParams) - 9);
-        Result:= IsDefined(LDefine);
-        Delete(LParams, 1, Length(LDefine)+9);
-        LParams:= TrimLeft(LParams);
-      end else if Pos('DECLARED(',LParams) = 1 then begin
-        LDefine := Copy(LParams, 10, Pos(')', LParams) - 10);
-        Result:= IsDeclared(LDefine);
-        Delete(LParams, 1, Length(LDefine)+9);
-        LParams:= TrimLeft(LParams);
-      end else exit(false);
-      'N': if (Pos('NOT',LParams) = 1) then begin
-        Delete(LParams,1,3);
-        LParams:= TrimLeft(LParams);
-        NextPart:= ExtractNextPart(1);
-        Result:= not EvaluateConditionalExpression(NextPart, Result);
-        Delete(LParams, 1, Length(NextPart));
-        LParams:= TrimLeft(LParams);
-      end else exit(false);
-      'C': if (Pos('COMPILERVERSION',LParams) = 1) then begin
-        IsComVer := true;
-        Delete(LParams, 1, Length('COMPILERVERSION'));
-        LParams:= TrimLeft(LParams);
-      end else exit(false);
-      'R': if (Pos('RTLVERSION',LParams) = 1) then begin
-        IsRTLVer:= true;
-        Delete(LParams, 1, Length('RTLVERSION'));
-        LParams:= TrimLeft(LParams);
-      end else exit(false);
-      '<','=','>': begin
-        if (Pos('>=',LParams) = 1) then LOper:= '>='
-        else if (Pos('<=',LParams) = 1) then LOper:= '<='
-        else if (Pos('<>',LParams) = 1) then LOper:= '<>'
-        else LOper:= LParams[1];
-        Delete(LParams, 1, Length(LOper));
-        LParams:= TrimLeft(LParams);
-        NextPart:= ExtractNumber;
-        MyFormatSettings:= FormatSettings;
-        MyFormatSettings.DecimalSeparator:= '.';
-        if TryStrToFloat(NextPart, Value, MyFormatSettings) then begin
-          if IsComVer then
-            Result := EvaluateComparison(CompilerVersion, LOper, Value)
-          else if IsRtlVer then
-            Result := EvaluateComparison(RTLVersion, LOper, Value);
-          Delete(LParams, 1, Length(NextPart));
-          LParams:= Trim(LParams);
-        end else Exit(False);
-      end;
-      else Exit(false);   //Should not happen.
-    end; {case}
-  end; {while}
+  Text := UpperCase(Trim(AParams));
+  Position := 1;
+  Depth := 0;
+  Settings := FormatSettings;
+  Settings.DecimalSeparator := '.';
+  Settings.ThousandSeparator := #0;
+  NextToken;
+  Value := ParseExpression(True);
+  if TokenKind <> etEnd then
+    Fail('Unexpected token "' + TokenText + '"');
+  RequireBoolean(Value);
+  Result := Value.BooleanValue;
 end;
-
-
-//function TmwBasePasLex.EvaluateConditionalExpression(const AParams: string): Boolean;
-//var
-//  LParams: String;
-//  LDefine: String;
-//  LEvaluation: TmwPasLexExpressionEvaluation;
-//  LIsComVer: Boolean;
-//  LIsRtlVer: Boolean;
-//  LOper: string;
-//  LValue: Integer;
-//  p: Integer;
-//  BracketCount,i: integer;
-//  BracketPart: string;
-//  PartialResult: boolean;
-//begin
-//  { TODO : Expand support for <=> evaluations (complicated to do). Expand support for NESTED expressions }
-//  LEvaluation := leeNone;
-//  LParams := TrimLeft(AParams);
-//  LIsComVer := Pos('COMPILERVERSION', LParams) = 1;
-//  LIsRtlVer := Pos('RTLVERSION', LParams) = 1;
-//  if LIsComVer or LIsRtlVer then //simple parser which covers most frequent use cases
-//  begin
-//    Result := False;
-//    if LIsComVer then
-//      Delete(LParams, 1, Length('COMPILERVERSION'));
-//    if LIsRtlVer then
-//      Delete(LParams, 1, Length('RTLVERSION'));
-//    while (LParams <> '') and (LParams[1] = ' ') do
-//      Delete(LParams, 1, 1);
-//    p := Pos(' ', LParams);
-//    if p > 0 then
-//    begin
-//      LOper := Copy(LParams, 1, p-1);
-//      Delete(LParams, 1, p);
-//      while (LParams <> '') and (LParams[1] = ' ') do
-//        Delete(LParams, 1, 1);
-//      p := Pos(' ', LParams);
-//      if p = 0 then
-//        p := Length(LParams) + 1;
-//      if TryStrToInt(Copy(LParams, 1, p-1), LValue) then
-//      begin
-//        Delete(LParams, 1, p);
-//        while (LParams <> '') and (LParams[1] = ' ') do
-//          Delete(LParams, 1, 1);
-//        if LParams = '' then
-//          if LIsComVer then
-//            Result := EvaluateComparison(CompilerVersion, LOper, LValue)
-//          else if LIsRtlVer then
-//            Result := EvaluateComparison(RTLVersion, LOper, LValue);
-//      end;
-//    end;
-//  end else
-//  while Pos('(', LParams) = 1 do begin
-//    //Extract the Part between the brackets and feed this to the evaluator.
-//    BracketCount:= 1;
-//    i:= 2;
-//    while i <= Length(LParams) do begin
-//      case LParams[i] of
-//        '(': Inc(BracketCount);
-//        ')': Dec(BracketCount);
-//      end; {case}
-//      if (BracketCount = 0) then break;
-//      Inc(i);
-//    end; {while}
-//    BracketPart:= MidStr(LParams,2,i-2);
-//    PartialResult:= EvaluateConditionalExpression(BracketPart);
-//    Result:= Result or PartialResult;
-//    Delete(LParams, 1, Length(BracketPart)+2);
-//    LParams:= TrimLeft(LParams);
-//  end;
-//
-//  if (Pos('DEFINED(', LParams) = 1) or (Pos('NOT DEFINED(', LParams) = 1) then
-//  begin
-//    Result := True; // Optimistic
-//    while (Pos('DEFINED(', LParams) = 1) or (Pos('NOT DEFINED(', LParams) = 1) do
-//    begin
-//      if Pos('DEFINED(', LParams) = 1 then
-//      begin
-//        LDefine := Copy(LParams, 9, Pos(')', LParams) - 9);
-//        LParams := TrimLeft(Copy(LParams, 10 + Length(LDefine), Length(AParams) - (9 + Length(LDefine))));
-//        case LEvaluation of
-//          leeNone: Result := IsDefined(LDefine);
-//          leeAnd: Result := Result and IsDefined(LDefine);
-//          leeOr: Result := Result or IsDefined(LDefine);
-//          leeXor: Result:= Result xor IsDefined(LDefine);
-//        end;
-//      end
-//      else if Pos('NOT DEFINED(', LParams) = 1 then
-//      begin
-//        LDefine := Copy(LParams, 13, Pos(')', LParams) - 13);
-//        LParams := TrimLeft(Copy(LParams, 14 + Length(LDefine), Length(AParams) - (13 + Length(LDefine))));
-//        case LEvaluation of
-//          leeNone: Result := (not IsDefined(LDefine));
-//          leeAnd: Result := Result and (not IsDefined(LDefine));
-//          leeOr: Result := Result or (not IsDefined(LDefine));
-//          leeXor: Result:= Result xor (not IsDefined(LDefine));
-//        end;
-//      end;
-//      // Determine next Evaluation
-//      if Pos('AND ', LParams) = 1 then
-//      begin
-//        LEvaluation := leeAnd;
-//        LParams := TrimLeft(Copy(LParams, 4, Length(LParams) - 3));
-//      end
-//      else if Pos('OR ', LParams) = 1 then
-//      begin
-//        LEvaluation := leeOr;
-//        LParams := TrimLeft(Copy(LParams, 3, Length(LParams) - 2));
-//      end
-//      else if Pos('XOR ', LParams) = 1 then
-//      begin
-//        LEvaluation := leeXor;
-//        LParams := TrimLeft(Copy(LParams, 3, Length(LParams) - 2));
-//      end;
-//    end;
-//  end else
-//    Result := False;
-//end;
 
 procedure TmwBasePasLex.ColonProc;
 begin
@@ -2028,6 +2115,7 @@ begin
   New(StackFrame);
   StackFrame^.Next := FTopDefineRec;
   StackFrame^.Defined := ADefined;
+  StackFrame^.ElseSeen := False;
   StackFrame^.StartCount := FDefineStack;
   FTopDefineRec := StackFrame;
   if not ADefined then
@@ -2045,12 +2133,11 @@ var
   StackFrame: PDefineRec;
 begin
   StackFrame := FTopDefineRec;
-  if StackFrame <> nil then
-  begin
-    FDefineStack := StackFrame^.StartCount;
-    FTopDefineRec := StackFrame^.Next;
-    Dispose(StackFrame);
-  end;
+  if StackFrame = nil then
+    raise EConditionalExpressionError.Create('ENDIF/IFEND without a matching IF');
+  FDefineStack := StackFrame^.StartCount;
+  FTopDefineRec := StackFrame^.Next;
+  Dispose(StackFrame);
 end;
 
 procedure TmwBasePasLex.GreaterProc;
@@ -2113,8 +2200,14 @@ end;
 
 function TmwBasePasLex.IsDeclared(const ADefine: string): Boolean;
 begin
-  Result:= true;
-  {TODO -oJB -cTmwBasePasLex.IsDeclared : Implement}
+  if not Assigned(FOnResolveDeclaration) then
+    raise EConditionalExpressionError.CreateFmt(
+      'Cannot evaluate DECLARED(%s): assign OnResolveDeclaration with current scope information',
+      [ADefine]);
+  Result := False;
+  if not FOnResolveDeclaration(Self, ADefine, Result) then
+    raise EConditionalExpressionError.CreateFmt(
+      'Cannot resolve DECLARED(%s) in the current scope', [ADefine]);
 end;
 
 function TmwBasePasLex.IsIdentifiers(AChar: Char): Boolean;
@@ -2188,7 +2281,11 @@ begin
 
     Next;
   end else
+  begin
     FTokenID := ptNull;
+    if FUseDefines and (FTopDefineRec <> nil) then
+      raise EConditionalExpressionError.Create('Unterminated conditional directive');
+  end;
 end;
 
 procedure TmwBasePasLex.NumberProc;
@@ -2395,70 +2492,16 @@ begin
   else
     FTokenID := ptRoundOpen;
   end;
-  case FTokenID of
-    PtAnsiComment:
-      begin
-        if Assigned(FOnComment) then
-        begin
-          SetString(CommentText, PChar(@FBuffer.Buf[BeginRun]), FBuffer.Run - BeginRun - 2);
-          DoOnComment(CommentText);
-        end;
-      end;
-    PtCompDirect:
-      begin
-        if Assigned(FOnCompDirect) then
-          FOnCompDirect(Self);
-      end;
-    PtDefineDirect:
-      begin
-        if Assigned(FOnDefineDirect) then
-          FOnDefineDirect(Self);
-      end;
-    PtElseDirect:
-      begin
-        if Assigned(FOnElseDirect) then
-          FOnElseDirect(Self);
-      end;
-    PtEndIfDirect:
-      begin
-        if Assigned(FOnEndIfDirect) then
-          FOnEndIfDirect(Self);
-      end;
-    PtIfDefDirect:
-      begin
-        if Assigned(FOnIfDefDirect) then
-          FOnIfDefDirect(Self);
-      end;
-    PtIfNDefDirect:
-      begin
-        if Assigned(FOnIfNDefDirect) then
-          FOnIfNDefDirect(Self);
-      end;
-    PtIfOptDirect:
-      begin
-        if Assigned(FOnIfOptDirect) then
-          FOnIfOptDirect(Self);
-      end;
-    PtIncludeDirect:
-      begin
-        if Assigned(FIncludeHandler) then
-          IncludeFile;
-      end;
-    PtResourceDirect:
-      begin
-        if Assigned(FOnResourceDirect) then
-          FOnResourceDirect(Self);
-      end;
-    PtScopedEnumsDirect:
-      begin
-        UpdateScopedEnums;
-      end;
-    PtUndefDirect:
-      begin
-        if Assigned(FOnUnDefDirect) then
-          FOnUnDefDirect(Self);
-      end;
-  end;
+  if FTokenID = ptAnsiComment then
+  begin
+    if Assigned(FOnComment) then
+    begin
+      SetString(CommentText, PChar(@FBuffer.Buf[BeginRun]), FBuffer.Run - BeginRun - 2);
+      DoOnComment(CommentText);
+    end;
+  end
+  else if not (FTokenID in [ptRoundOpen, ptSquareOpen]) then
+    ProcessDirective;
 end;
 
 procedure TmwBasePasLex.SemiColonProc;
@@ -2848,20 +2891,22 @@ begin
   else
     EndPos := 0;
   end;
-  while IsIdentifiers(FBuffer.Buf[TempRun]) do
+  while (TempRun < EndPos) and IsIdentifiers(FBuffer.Buf[TempRun]) do
     Inc(TempRun);
-  while CharInSet(FBuffer.Buf[TempRun], ['+', ',', '-']) do
+  while (TempRun < EndPos) and CharInSet(FBuffer.Buf[TempRun], ['+', ',', '-']) do
   begin
     Inc(TempRun);
-    while IsIdentifiers(FBuffer.Buf[TempRun]) do
+    while (TempRun < EndPos) and IsIdentifiers(FBuffer.Buf[TempRun]) do
       Inc(TempRun);
     if CharInSet(FBuffer.Buf[TempRun - 1], ['+', ',', '-']) and (FBuffer.Buf[TempRun] = ' ')
       then Inc(TempRun);
   end;
 
-  while CharInSet(FBuffer.Buf[TempRun], [' ', #9]) do Inc(TempRun);
-  while CharInSet(FBuffer.Buf[EndPos - 1], [' ', #9]) do Dec(EndPos);
+  while (TempRun < EndPos) and CharInSet(FBuffer.Buf[TempRun], [' ', #9]) do Inc(TempRun);
+  while (EndPos > TempRun) and CharInSet(FBuffer.Buf[EndPos - 1], [' ', #9]) do Dec(EndPos);
 
+  if EndPos < TempRun then
+    raise EConditionalExpressionError.Create('Malformed compiler directive');
   ParamLen := EndPos - TempRun;
   SetString(Result, (FBuffer.Buf + TempRun), ParamLen);
   Result := UpperCase(Result);
@@ -2928,6 +2973,7 @@ end;
 
 procedure TmwBasePasLex.Init;
 begin
+  ResetConditionalStack;
   FCommentState := csNo;
   FBuffer.LineNumber := 0;
   FBuffer.LinePos := 0;
@@ -2937,10 +2983,17 @@ end;
 
 procedure TmwBasePasLex.InitFrom(ALexer: TmwBasePasLex);
 begin
+  if ALexer = Self then
+    Exit;
+  // Copy the current token without executing the following directive speculatively.
   SetSharedBuffer(ALexer.FBuffer);
   FCommentState := ALexer.FCommentState;
+  FAsmCode := ALexer.FAsmCode;
   FScopedEnums := ALexer.ScopedEnums;
-  FBuffer.Run := ALexer.RunPos;
+  FTokenPos := ALexer.FTokenPos;
+  FTokenLine := ALexer.FTokenLine;
+  FTokenLinePos := ALexer.FTokenLinePos;
+  FLineSeq := ALexer.FLineSeq;
   FTokenID := ALexer.TokenID;
   FExID := ALexer.ExID;
   CloneDefinesFrom(ALexer);
@@ -3252,11 +3305,8 @@ end;
 
 procedure TmwPasLex.InitAhead;
 begin
-  FAheadLex.FCommentState := FCommentState;
-  FAheadLex.CloneDefinesFrom(Self);
-
-  FAheadLex.SetSharedBuffer(FBuffer);
-
+  FAheadLex.InitFrom(Self);
+  FAheadLex.Next;
   while FAheadLex.IsJunk do
     FAheadLex.Next;
 end;
@@ -3264,7 +3314,8 @@ end;
 procedure TmwPasLex.SetOrigin(const NewValue: string);
 begin
   inherited SetOrigin(NewValue);
-  FAheadLex.SetSharedBuffer(FBuffer);
+  FAheadLex.InitFrom(Self);
+  FAheadLex.Next;
 end;
 
 function TmwBasePasLex.Func86: TptTokenKind;

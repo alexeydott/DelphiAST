@@ -63,9 +63,73 @@ compiled by every host compiler.
 Method and constant names may be represented by `ntName` child nodes. Generic
 method parameters are retained structurally. Consumers should inspect those
 nodes rather than relying exclusively on the parent's `anName` attribute.
-`LineSeq` is initialized and binary serialization revision 1.0.1 preserves it;
-the reader also accepts the previous 1.0.0 layout for the current node enums.
+`LineSeq` is initialized and binary serialization revision 1.0.1 preserves it.
 
 ### Node lookup API
 
 `FindNode([ntAbsolute, ntValue, ntExpression, ntIdentifier])` follows an ordered child path. To find the first direct child whose type belongs to a set, use `FindNodeOfTypes([ntValue, ntAbsolute])`. The set overload was renamed because Delphi cannot unambiguously resolve array literals against both overloads. `FindNode(TSyntaxNodeType)` is unchanged.
+
+## Review follow-up: compatibility and API
+
+### Syntax tree consumers
+
+`TSyntaxNode.HasAttributes` is restored. An empty lookup path returns `nil`;
+`ntUnknown` remains a wildcard at intermediate path positions. The
+`FindNodeOfTypes` API introduced in master is retained.
+
+Class storage metadata is confined to its declaration section and does not
+propagate into nested record fields. Section boundaries follow the
+[Delphi field declaration rules](https://docwiki.embarcadero.com/RADStudio/Sydney/en/Fields_%28Delphi%29).
+Operator keywords are recognized independently of letter case. Compiler
+directive nodes retain source text and operand case while normalizing the
+directive name in `anType`.
+
+### Binary caches
+
+`TBinarySerializer.Read` now rejects version **1.0.0** with `False`. That version
+was written with incompatible `TSyntaxNodeType` ordinal orderings, and the
+header cannot identify which ordering to use. Rebuild affected caches from
+their source files. The **1.0.1** layout is retained for reading and writing;
+`FileName` is still not serialized. An unsuccessful read leaves the caller's
+`Root` unchanged. The reader validates numeric encodings, counts and string
+references, and grows string buffers as data arrives. String-reference IDs use
+the same UTF-16 length convention in Delphi and FPC; FPC string values are UTF-8.
+
+### Conditional compilation
+
+`DECLARED(Identifier)` needs declaration visibility for the current scope,
+as specified by the [Delphi IF directive](https://docwiki.embarcadero.com/RADStudio/Alexandria/en/IF_directive_%28Delphi%29).
+Supply it before `Builder.Run` through
+`Builder.Lexer.Lexer.OnResolveDeclaration`; the intermediate `TPasLexer`
+wrapper exposes the underlying lexer through its own `Lexer` property. The
+event type in `SimpleParser.Lexer` is:
+
+```pascal
+TResolveDeclarationEvent = function(Sender: TmwBasePasLex;
+  const Identifier: string; out ADeclared: Boolean): Boolean of object;
+```
+
+Return `True` when the answer is known and set `ADeclared` to `True` for a
+visible declaration or `False` for a known absence. Return `False` when the
+caller cannot resolve the identifier. A missing resolver or an unresolved
+declaration in a condition that must be evaluated raises
+`EConditionalExpressionError`; `Builder.Run` exposes it as
+`ESyntaxTreeException`. Unsupported active expressions also fail explicitly.
+There is no built-in declaration symbol table, and conditional defines do not
+substitute for declarations.
+
+The existing **`$IFOPT` limitation remains**: compiler-switch values are not
+evaluated. With conditional processing enabled, its branch is treated as
+false; the low-level parser reports `meNotSupported`.
+
+### Regression coverage
+
+The shared Delphi/FPC review units cover
+[AST APIs and metadata](Test/UnitTests/DelphiAST.AST.Review.Tests.pas),
+[binary fixtures and malformed streams](Test/UnitTests/DelphiAST.Binary.Review.Tests.pas),
+[conditional evaluation, scope resolution and lexer reuse](Test/UnitTests/DelphiAST.Conditional.Review.Tests.pas),
+and [assembly boundaries, anonymous method types and record variants](Test/UnitTests/DelphiAST.Grammar.Review.Tests.pas).
+These complement the existing snippet suite and deterministic fuzz target.
+Owned stream-conversion buffers are released on syntax and I/O errors; the
+caller retains ownership of the input stream and can reuse the parser.
+Use the respective Delphi and FPC test runners to validate a build.

@@ -39,8 +39,10 @@ implementation
 uses
   SysUtils;
 
-var
+const
   CSignature: AnsiString = 'DAST binary file'#26;
+  CBinaryVersion = $01000001;
+  CStringReadChunkSize = 16384;
 
 function TBinarySerializer.CheckSignature: boolean;
 var
@@ -56,8 +58,11 @@ var
   version: Integer;
 begin
   version := 0;
+  // Version 1.0.0 was written with incompatible TSyntaxNodeType orderings.
+  // Its header cannot identify the producer, so accepting it can silently
+  // turn one node kind into another. Such caches must be rebuilt from source.
   Result := (FStream.Read(version, 4) = 4)
-        and ((version = $01000000) or (version = $01000001));
+        and (version = CBinaryVersion);
   FVersion := version;
 end;
 
@@ -78,6 +83,8 @@ var
   node: TSyntaxNode;
 begin
   Result := false;
+  if Stream = nil then
+    Exit;
 
   FStringList := TStringList.Create;
   try
@@ -89,7 +96,10 @@ begin
     if not ReadNode(node) then
       Exit;
     Root := node;
-  finally FStringList.Free; end;
+  finally
+    FreeAndNil(FStringList);
+    FStream := nil;
+  end;
 
   Result := true;
 end;
@@ -102,6 +112,7 @@ var
   num      : cardinal;
   numSub: cardinal;
   str      : string;
+  attributesSeen: TAttributeNames;
 begin
   Result := false;
   node := nil;
@@ -149,17 +160,22 @@ begin
         end;
     end;
 
-    if not ReadNumber(numSub) then
+    if (not ReadNumber(numSub)) or
+      (numSub > cardinal(Ord(High(TAttributeName)) + 1)) then
       Exit;
+    attributesSeen := [];
     for i := 1 to numSub do begin
       if (not ReadNumber(num)) or (num > cardinal(Ord(High(TAttributeName)))) then
         Exit;
+      if TAttributeName(num) in attributesSeen then
+        Exit;
+      Include(attributesSeen, TAttributeName(num));
       if not ReadString(str) then
         Exit;
       Node.SetAttribute(TAttributeName(num), str);
     end;
 
-    if not ReadNumber(numSub) then
+    if (not ReadNumber(numSub)) or (numSub > cardinal(High(Integer))) then
       Exit;
     for i := 1 to numSub do begin
       if not ReadNode(childNode) then
@@ -188,18 +204,28 @@ begin
   repeat
     if FStream.Read(lowPart, 1) <> 1 then
       Exit;
-    num := num OR ((lowPart AND $7F) SHL shift);
+    // A Cardinal has only four payload bits left in its fifth byte.
+    // This also rejects continuation beyond five bytes before a shift can
+    // wrap around and turn an overflowing value into a valid small number.
+    if (shift = 28) and ((lowPart and $F0) <> 0) then
+      Exit;
+    num := num OR (cardinal(lowPart AND $7F) SHL shift);
+    if (lowPart AND $80) = 0 then
+    begin
+      Result := true;
+      Exit;
+    end;
     Inc(shift, 7);
-  until (lowPart AND $80) = 0;
-
-  Result := true;
+  until false;
 end;
 
 function TBinarySerializer.ReadString(var str: string): boolean;
 var
   id: integer;
   len: cardinal;
+  readPosition, readCount, capacity: cardinal;
   u8: UTF8String;
+  unicodeText: UnicodeString;
 begin
   Result := false;
 
@@ -212,12 +238,45 @@ begin
     str := FStringList[id];
   end
   else begin
-    SetLength(u8, len);
-    if len > 0 then
-      if cardinal(FStream.Read(u8[1], len)) <> len then
+    // TStream.Read uses a signed Integer count, including on Win64.
+    if len > cardinal(High(Integer)) then
+      Exit;
+    // Grow only as payload arrives. A truncated stream with a huge advertised
+    // length must not first allocate gigabytes, and the reader must also work
+    // with streams that do not implement Size or Seek.
+    capacity := 0;
+    readPosition := 0;
+    while readPosition < len do
+    begin
+      readCount := len - readPosition;
+      if readCount > CStringReadChunkSize then
+        readCount := CStringReadChunkSize;
+      if readPosition + readCount > capacity then
+      begin
+        if capacity = 0 then
+          capacity := readCount
+        else if capacity > len div 2 then
+          capacity := len
+        else
+          capacity := capacity * 2;
+        SetLength(u8, capacity);
+      end;
+      if FStream.Read(u8[readPosition + 1], Integer(readCount)) <> Integer(readCount) then
         Exit;
-    str := UTF8ToUnicodeString(u8);
-    if Length(Str) > 4 then
+      Inc(readPosition, readCount);
+    end;
+    SetLength(u8, len);
+    {$IFDEF FPC}
+    // The parser's FPC strings contain UTF-8. Keep those bytes instead of
+    // routing them through the process-dependent ANSI code page.
+    unicodeText := UTF8Decode(u8);
+    str := string(u8);
+    {$ELSE}
+    unicodeText := UTF8ToUnicodeString(u8);
+    str := string(unicodeText);
+    {$ENDIF}
+    // Wire string IDs use Delphi's UTF-16 length, not FPC's byte length.
+    if Length(unicodeText) > 4 then
       FStringList.Add(str);
   end;
 
@@ -229,18 +288,23 @@ var
   version: Integer;
 begin
   Result := false;
+  if (Stream = nil) or (Root = nil) then
+    Exit;
 
   FStringTable := TDictionary<string,integer>.Create;
   try
     FStream := Stream;
     if FStream.Write(CSignature[1], Length(CSignature)) <> Length(CSignature) then
       Exit;
-    version := $01000001;
+    version := CBinaryVersion;
     if FStream.Write(version, 4) <> 4 then
       Exit;
     if not WriteNode(Root) then
       Exit;
-  finally FStringTable.Free; end;
+  finally
+    FreeAndNil(FStringTable);
+    FStream := nil;
+  end;
 
   Result := true;
 end;
@@ -252,6 +316,14 @@ var
   nodeClass: TNodeClass;
 begin
   Result := false;
+  if Node = nil then
+    Exit;
+  if (Node.Col < 0) or (Node.Line < 0) or (Node.LineSeq < 0) then
+    Exit;
+  if Node is TCompoundSyntaxNode then
+    if (TCompoundSyntaxNode(Node).EndCol < 0) or
+      (TCompoundSyntaxNode(Node).EndLine < 0) then
+      Exit;
 
   if Node is TCompoundSyntaxNode then
     nodeClass := ntCompound
@@ -316,20 +388,26 @@ var
   i: Integer;
   id: integer;
   u8: UTF8String;
+  unicodeText: UnicodeString;
 begin
   Result := false;
+  {$IFDEF FPC}
+  unicodeText := UTF8Decode(S);
+  {$ELSE}
+  unicodeText := UnicodeString(S);
+  {$ENDIF}
 
-  if (Length(S) > 4) and FStringTable.TryGetValue(S, id) then begin
+  if (Length(unicodeText) > 4) and FStringTable.TryGetValue(S, id) then begin
     if not WriteNumber(cardinal(id) OR $FF000000) then
       Exit;
   end
   else begin
-    if Length(S) > 4 then begin
+    if Length(unicodeText) > 4 then begin
       FStringTable.Add(S, FStringTable.Count);
       if FStringTable.Count > $FFFFFF then
         raise Exception.Create('TBinarySerializer.WriteString: Too many strings!');
     end;
-    u8 := UTF8Encode(s);
+    u8 := UTF8Encode(unicodeText);
     i := Length(u8);
     if not WriteNumber(i) then
       Exit;

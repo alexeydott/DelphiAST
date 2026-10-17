@@ -33,6 +33,7 @@ type
     FLine: Integer;
     FFileName: string;
     function GetHasChildren: Boolean; inline;
+    function GetHasAttributes: Boolean; inline;
     function TryGetAttributeEntry(const Key: TAttributeName; out AttributeEntry: PAttributeEntry): boolean;
     function GetChildCount: cardinal; inline;
     function GetChildNode(index: cardinal): TSyntaxNode; inline;
@@ -85,6 +86,7 @@ type
     function FindNode(const TypesPath: array of TSyntaxNodeType): TSyntaxNode; overload;
     property Attributes: TArray<TAttributeEntry> read FAttributes;
     property ChildNodes: TArray<TSyntaxNode> read FChildNodes;
+    property HasAttributes: Boolean read GetHasAttributes;
     property HasChildren: Boolean read GetHasChildren;
     property Typ: TSyntaxNodeType read FTyp write FTyp;
     property ParentNode: TSyntaxNode read FParentNode;
@@ -390,6 +392,11 @@ end;
 function TSyntaxNode.GetHasChildren: Boolean;
 begin
   Result := Length(FChildNodes) > 0;
+end;
+
+function TSyntaxNode.GetHasAttributes: Boolean;
+begin
+  Result := Length(FAttributes) > 0;
 end;
 
 function TSyntaxNode.GetChildCount: cardinal;

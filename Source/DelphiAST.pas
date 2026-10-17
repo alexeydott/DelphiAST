@@ -1179,7 +1179,7 @@ var
   Part2: integer;
   Root: TSyntaxNode;
 begin
-  Directive:= Uppercase(Lexer.Token);
+  Directive := Lexer.Token;
   if not (Directive.EndsWith('}') or Directive.EndsWith('*)')) then
     raise ESyntaxTreeException.Create(Lexer.PosXY.Y, Lexer.PosXY.X,
       Lexer.FileName, 'Unterminated compiler directive', nil);
@@ -1199,10 +1199,10 @@ begin
   end;
   Part2:= 1;
   while (Part2 <= Length(Directive)) and
-    not CharInSet(Directive[Part2],[' ', '+', '-', '}']) do begin
+    not CharInSet(Directive[Part2],[#9, #10, #13, ' ', '+', '-', '}']) do begin
     Inc(Part2);
   end;
-  Node.Attribute[anType]:= LeftStr(Directive, Part2-1);
+  Node.Attribute[anType] := UpperCase(LeftStr(Directive, Part2-1));
   Delete(Directive, 1, Part2-1);
   Delete(Directive, Length(Directive), 1);
   Directive:= Trim(Directive);
@@ -2242,10 +2242,11 @@ end;
 
 procedure TPasSyntaxTreeBuilder.MethodKind;
 var
-  value: string;
+  Value: string;
 begin
-  DoHandleString(value);
-  FStack.Peek.Attribute[anKind]:= Lexer.Token;
+  Value := LowerCase(Lexer.Token);
+  DoHandleString(Value);
+  FStack.Peek.Attribute[anKind] := Value;
   inherited;
 end;
 
@@ -2695,6 +2696,7 @@ end;
 
 function TPasSyntaxTreeBuilder.Run(SourceStream: TStream): TSyntaxNode;
 begin
+  FClassPrefix := False;
   Result := TSyntaxNode.Create(ntUnknown);
   try
     FStack.Clear;
@@ -2709,6 +2711,9 @@ begin
       FStack.Clear;
     end;
   except
+    on E: EConditionalExpressionError do
+      raise ESyntaxTreeException.Create(Lexer.PosXY.Y, Lexer.PosXY.X,
+        Lexer.FileName, E.Message, Result);
     on E: EIncludeError do
       raise ESyntaxTreeException.Create(Lexer.PosXY.Y, Lexer.PosXY.X,
         Lexer.FileName, E.Message, Result);

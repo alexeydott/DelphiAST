@@ -737,28 +737,32 @@ var
 {$ENDIF}
 begin
   OwnStream := not (SourceStream is TStringStream);
-  if OwnStream then
-  begin
-  {$IFNDEF FPC}
-    StringStream := TStringStream.Create;
-    StringStream.LoadFromStream(SourceStream);
-  {$ELSE}
-    Strings := TStringList.Create;
-    try
-      Strings.LoadFromStream(SourceStream);
-      StringStream := TStringStream.Create('');
-      Strings.SaveToStream(StringStream);
-    finally
-      FreeAndNil(Strings);
-    end;
-  {$ENDIF}
-  end
-  else
-    StringStream := TStringStream(SourceStream);
-  FLexer.Origin := StringStream.GetDataString;
-  ParseFile;
-  if OwnStream then
-    StringStream.Free;
+  StringStream := nil;
+  try
+    if OwnStream then
+    begin
+    {$IFNDEF FPC}
+      StringStream := TStringStream.Create;
+      StringStream.LoadFromStream(SourceStream);
+    {$ELSE}
+      Strings := TStringList.Create;
+      try
+        Strings.LoadFromStream(SourceStream);
+        StringStream := TStringStream.Create('');
+        Strings.SaveToStream(StringStream);
+      finally
+        FreeAndNil(Strings);
+      end;
+    {$ENDIF}
+    end
+    else
+      StringStream := TStringStream(SourceStream);
+    FLexer.Origin := StringStream.GetDataString;
+    ParseFile;
+  finally
+    if OwnStream then
+      StringStream.Free;
+  end;
 end;
 
 constructor TmwSimplePasPar.Create;
@@ -2416,12 +2420,13 @@ end;
 
 procedure TmwSimplePasPar.RecordVariantTag;
 begin
-  Identifier;
-  if TokenId = ptColon then
+  Lexer.InitAhead;
+  if Lexer.AheadTokenID = ptColon then
   begin
-    Expected(ptColon);
     Identifier;
+    Expected(ptColon);
   end;
+  TypeID;
 end;
 
 
@@ -2650,44 +2655,38 @@ begin
 end;
 
 procedure TmwSimplePasPar.AsmStatements;
+var
+  PreviousAsmCode: Boolean;
 begin
+  PreviousAsmCode := Lexer.AsmCode;
   Lexer.AsmCode := True;
-  Expected(ptAsm);
-  { should be replaced with a Assembler lexer }
-  while TokenID <> ptEnd do begin
-    case FLexer.TokenID of
-      ptBegin, ptCase, ptEnd, ptIf, ptFunction, ptProcedure, ptRepeat, ptWhile: Break;
-      ptAddressOp:
-        begin
-          AsmStatement;
-        end;
-      ptDoubleAddressOp:
-        begin
-          AsmStatement;
-        end;
-      ptNull:
-        begin
-          Expected(ptEnd);
-          Exit;
-        end;
-      ptCRLF: //empty line
-        NextTokenAssembly;
-      else begin
+  try
+    Expected(ptAsm);
+    while not (TokenID in [ptEnd, ptNull]) do
+    begin
+      case TokenID of
+        ptBegin, ptCase, ptIf, ptFunction, ptProcedure, ptRepeat, ptWhile:
+          Break;
+        ptCRLF, ptSemiColon:
+          NextTokenAssembly;
+      else
         AsmStatement;
-        Expected(ptCRLF);
       end;
-    end; {case}
-  end; {while}
-  Lexer.AsmCode := False;
+    end;
+  finally
+    Lexer.AsmCode := PreviousAsmCode;
+  end;
   Expected(ptEnd);
 end;
 
 procedure TmwSimplePasPar.AsmStatement;
 begin
-  while not(Lexer.TokenID in [ptCRLF, ptNull]) do begin
+  while not (TokenID in [ptEnd, ptCRLF, ptSemiColon, ptNull]) do
+  begin
     case TokenID of
       ptAddressOp, ptDoubleAddressOp: AsmLabelAt;
-      else AsmFragment;
+    else
+      AsmFragment;
     end;
   end;
 end;
@@ -2700,6 +2699,9 @@ end;
 procedure TmwSimplePasPar.AsmLabelAt;
 begin
   NextTokenAssembly;
+  // A reserved word can be a local label, for example JMP @@End.
+  if not (TokenID in [ptCRLF, ptSemiColon, ptNull]) then
+    AsmFragment;
 end;
 
 procedure TmwSimplePasPar.AsOp;
@@ -5720,6 +5722,8 @@ begin
         if TokenID = ptRoundOpen then
           FormalParameterList;
       end;
+  else
+    SynError(InvalidProceduralType);
   end;
   while ExID in [ptCdecl, ptExport, ptFar, ptNear, ptOverload, ptOverride,
     ptPascal, ptRegister, ptSafeCall, ptStdCall, ptWinApi, ptExtdecl, ptPlatform, ptAssembler,
@@ -6052,7 +6056,7 @@ begin
     case TokenID of
       ptAsm:
         begin
-          AsmStatement;
+          AsmStatements;
         end;
     else
       begin

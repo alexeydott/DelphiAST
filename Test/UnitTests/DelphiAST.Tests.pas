@@ -10,12 +10,39 @@ implementation
 
 uses
   Classes, SysUtils, DelphiAST, DelphiAST.Classes, DelphiAST.Consts,
-  DelphiAST.Writer, DelphiAST.TestFramework, DelphiAST.TestSupport
+  DelphiAST.Writer, DelphiAST.TestFramework, DelphiAST.TestSupport, DelphiAST.Actualization.Tests
   {$IFNDEF FPC}, DelphiAST.Serialize.Binary{$ENDIF};
 
 var
   SnippetPath: string;
   CurrentSnippet: string;
+  CurrentInvalidSnippet: string;
+
+procedure TestCurrentInvalidSnippet;
+var Root:TSyntaxNode;Rejected:Boolean;
+begin
+  Root:=nil;Rejected:=False;
+  try Root:=ParseFile(CurrentInvalidSnippet,SnippetPath);
+  except on ESyntaxTreeException do Rejected:=True;end;
+  Root.Free;AssertTrue(Rejected,'Expected a syntax error for '+CurrentInvalidSnippet);
+end;
+
+procedure RunInvalidSnippetTests;
+var Search:TSearchRec;Code:Integer;Path:string;
+begin
+  Path:=IncludeTrailingPathDelimiter(ExtractFileDir(ExcludeTrailingPathDelimiter(SnippetPath)))+'InvalidSnippets'+PathDelim;
+  Code:=FindFirst(Path+'*.pas',faAnyFile,Search);
+  if Code<>0 then raise Exception.Create('Missing invalid-input regression snippets');
+  try
+    repeat
+      if (Search.Attr and faDirectory)=0 then begin
+        CurrentInvalidSnippet:=Path+Search.Name;
+        RunTest('Reject.'+Search.Name,TestCurrentInvalidSnippet);
+      end;
+      Code:=FindNext(Search);
+    until Code<>0;
+  finally FindClose(Search);end;
+end;
 
 procedure TestCurrentSnippet;
 var
@@ -222,6 +249,7 @@ end;
 
 procedure RunAllTests;
 begin
+  RunActualizationTests;
   RunTest('AST.UnitStructure', TestUnitStructure);
   RunTest('AST.MethodAndParameters', TestMethodAndParameters);
   RunTest('AST.ControlFlow', TestControlFlow);
@@ -234,6 +262,7 @@ begin
   RunTest('Serialization.BinaryRoundTrip', TestBinarySerializationRoundTrip);
   {$ENDIF}
   RunSnippetTests;
+  RunInvalidSnippetTests;
 end;
 
 end.

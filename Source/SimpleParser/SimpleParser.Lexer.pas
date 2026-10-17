@@ -471,6 +471,7 @@ end;
 
 function TmwBasePasLex.GetPosXY: TTokenPoint;
 begin
+  Result.LineSeq := FLineSeq;
   Result.Y := FTokenLine + 1;
   Result.X := FTokenPos - FTokenLinePos + 1;
 end;
@@ -939,7 +940,8 @@ function TmwBasePasLex.Func73: TptTokenKind;
 begin
   Result := ptIdentifier;
   if KeyComp('Except') then Result := ptExcept else
-  if KeyComp('AnsiChar') then FExId := ptAnsiChar;
+  if KeyComp('AnsiChar') then FExId := ptAnsiChar else
+  if KeyComp('Extdecl') then FExID := ptExtdecl;
 end;
 
 function TmwBasePasLex.Func75: TptTokenKind;
@@ -1851,7 +1853,7 @@ begin
             Result := EvaluateComparison(RTLVersion, LOper, Value);
           Delete(LParams, 1, Length(NextPart));
           LParams:= Trim(LParams);
-        end else Result:= false;
+        end else Exit(False);
       end;
       else Exit(false);   //Should not happen.
     end; {case}
@@ -2117,6 +2119,7 @@ begin
   {$ELSE}
   Result := TCharacter.IsLetterOrDigit(AChar) or (AChar = '_')
     or ((Ord(AChar) > 127) and not TCharacter.IsHighSurrogate(AChar) and not TCharacter.IsLowSurrogate(AChar));
+  {$IFEND}
   {$IFEND}
 end;
 
@@ -2855,27 +2858,27 @@ end;
 
 function TmwBasePasLex.GetIncludeFileNameFromToken(const IncludeToken: string): string;
 var
-  FileNameStartPos, CurrentPos: integer;
-  TrimmedToken: string;
-  QuotedFileName: Boolean;
+  Start, Current: Integer;
+  Text: string;
+  Quoted: Boolean;
 begin
-  TrimmedToken := Trim(IncludeToken);
-  CurrentPos := 1;
-  while TrimmedToken[CurrentPos] > #32 do
-    inc(CurrentPos);
-  while TrimmedToken[CurrentPos] <= #32 do
-    inc(CurrentPos);
-  QuotedFileName := TrimmedToken[CurrentPos] = '''';
-  if QuotedFileName then
-    inc(CurrentPos);
-  FileNameStartPos := CurrentPos;
-  while (TrimmedToken[CurrentPos] <> '}')
-    and (TrimmedToken[CurrentPos] <> '''')
-    and ((TrimmedToken[CurrentPos] > #32) or QuotedFileName)
-  do
-    inc(CurrentPos);
-
-  Result := Copy(TrimmedToken, FileNameStartPos, CurrentPos - FileNameStartPos);
+  Text := Trim(IncludeToken);
+  if Text.EndsWith('}') then System.Delete(Text, Length(Text), 1)
+  else if Text.EndsWith('*)') then System.Delete(Text, Length(Text)-1, 2)
+  else raise EIncludeError.Create('Unterminated include directive');
+  Current := 1;
+  while (Current <= Length(Text)) and (Text[Current] > #32) do Inc(Current);
+  while (Current <= Length(Text)) and (Text[Current] <= #32) do Inc(Current);
+  if Current > Length(Text) then raise EIncludeError.Create('Missing include filename');
+  Quoted := Text[Current] = #39;
+  if Quoted then Inc(Current);
+  Start := Current;
+  while (Current <= Length(Text)) and (Text[Current] <> #39) and
+    ((Text[Current] > #32) or Quoted) do Inc(Current);
+  if Quoted and ((Current > Length(Text)) or (Text[Current] <> #39)) then
+    raise EIncludeError.Create('Unterminated include filename');
+  Result := Copy(Text, Start, Current - Start);
+  if Result = '' then raise EIncludeError.Create('Missing include filename');
 end;
 
 procedure TmwBasePasLex.IncludeFile;

@@ -36,3 +36,12 @@ jobs:
 
       - name: Run tests
         run: build/fpc-tests/DelphiASTTests Test/Snippets
+
+      - name: Compile fuzz target
+        run: |
+          fpc -B -Mdelphi -FuSource -FuSource/SimpleParser -FiSource/SimpleParser \
+            -FuSource/FreePascalSupport -FuSource/FreePascalSupport/FPC_StringBuilder/Src \
+            -FuTest/UnitTests -FUbuild/fpc-tests/units -FEbuild/fpc-tests Test/UnitTests/ParseProbe.dpr
+
+      - name: Run deterministic grammar and mutation fuzzing
+        run: python3 Test/fuzz.py build/fpc-tests/ParseProbe --output build/fuzz --count 500

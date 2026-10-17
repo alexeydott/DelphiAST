@@ -86,7 +86,7 @@ type
     property Attributes: TArray<TAttributeEntry> read FAttributes;
     property ChildNodes: TArray<TSyntaxNode> read FChildNodes;
     property HasChildren: Boolean read GetHasChildren;
-    property Typ: TSyntaxNodeType read FTyp;
+    property Typ: TSyntaxNodeType read FTyp write FTyp;
     property ParentNode: TSyntaxNode read FParentNode;
 
     property LineSeq: Integer read FLineSeq write FLineSeq;
@@ -416,35 +416,38 @@ end;
 
 procedure TSyntaxNode.SetAttribute(const Key: TAttributeName; const Value: string);
 var
-  AttributeEntry: PAttributeEntry;
-  len: Integer;
+  Entry: PAttributeEntry;
+  Index: Integer;
 begin
-  if not HasAttribute(Key) then
+  if Value = '' then
   begin
-    if (Value = '') then Exit;  //no action needed
-    len := Length(FAttributes);
-    SetLength(FAttributes, len + 1);
-    AttributeEntry := @FAttributes[len];
-    AttributeEntry^.Key := Key;
+    RemoveAttribute(Key);
+    Exit;
+  end;
+  if TryGetAttributeEntry(Key, Entry) then
+    Entry^.Value := Value
+  else
+  begin
+    Index := Length(FAttributes);
+    SetLength(FAttributes, Index + 1);
+    FAttributes[Index].Key := Key;
+    FAttributes[Index].Value := Value;
     Include(FAttributesInUse, Key);
   end;
-  if (Value = '') then RemoveAttribute(Key);
-  AttributeEntry^.Value := Value;
 end;
 
 procedure TSyntaxNode.RemoveAttribute(const Key: TAttributeName);
-const
-  Size = SizeOf(TAttributeEntry);
-var
-  Entry: PAttributeEntry;
-  Index: integer;
+var I, J: Integer;
 begin
-  if HasAttribute(Key) then begin
-    TryGetAttributeEntry(Key, Entry);
-    Index:= (NativeUInt(Entry) - NativeUInt(@FAttributes[0])) + Size;
-    Move(Entry^, Pointer(NativeUInt(Entry)+Size)^, (High(FAttributes) * Size) - Index);
-    Exclude(FAttributesInUse, Key);
-  end;
+  for I := 0 to High(FAttributes) do
+    if FAttributes[I].Key = Key then
+    begin
+      for J := I to High(FAttributes) - 1 do
+        FAttributes[J] := FAttributes[J + 1];
+      SetLength(FAttributes, Length(FAttributes) - 1);
+      Exclude(FAttributesInUse, Key);
+      Exit;
+    end;
 end;
 
 function SameText(const Needle: string; const HayStack: array of string): boolean; overload;
@@ -462,6 +465,7 @@ var
   i: integer;
 begin
   Result:= false;
+  AttributeEntry := nil;
   if not(Key in FAttributesInUse) then begin
    //Do not allow the AttributeEntry to be undefined.
     AttributeEntry:= nil;
@@ -533,6 +537,7 @@ begin
     if FChildNodes[i] = Node then
     begin
       Result:= Node;
+      Node.FParentNode := nil;
       if i < High(FChildNodes) then
         Move(FChildNodes[i + 1], FChildNodes[i], SizeOf(TSyntaxNode) * (Length(FChildNodes) - i - 1));
       SetLength(FChildNodes, High(FChildNodes));

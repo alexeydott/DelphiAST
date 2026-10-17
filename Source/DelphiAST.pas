@@ -66,6 +66,7 @@ type
   protected
     FStack: TNodeStack;
     FComments: TObjectList<TCommentNode>;
+    FClassPrefix: Boolean;
     procedure AccessSpecifier; override;
     procedure AdditiveOperator; override;
     procedure AddressOp; override;
@@ -99,6 +100,7 @@ type
     procedure ClassMethod; override;
     procedure ClassMethodResolution; override;
     procedure ClassMethodHeading; override;
+    procedure ClassMethodOrProperty; override;
     procedure ClassProcedureHeading; override;
     procedure ClassProperty; override;
     procedure ClassReferenceType; override;
@@ -908,7 +910,15 @@ end;
 
 procedure TPasSyntaxTreeBuilder.ClassClass;
 begin
-  FStack.Peek.Attribute[anClass]:= AttributeValues[atTrue];
+  if FStack.Peek.Typ in [ntMethod, ntProperty] then
+    FStack.Peek.Attribute[anClass] := AttributeValues[atTrue]
+  else FClassPrefix := True;
+  inherited;
+end;
+
+procedure TPasSyntaxTreeBuilder.ClassMethodOrProperty;
+begin
+  FClassPrefix := False;
   inherited;
 end;
 
@@ -918,7 +928,7 @@ var
   Field, TypeInfo, TypeArgs: TSyntaxNode;
   IsClassVarSection: boolean;
 begin
-  IsClassVarSection:= FStack.Peek.HasAttribute(anClass);
+  IsClassVarSection := FClassPrefix;
   Fields := TSyntaxNode.Create(ntFields);
   try
     FStack.Push(Fields);
@@ -1136,7 +1146,7 @@ function TPasSyntaxTreeBuilder.GetMainSection(Node: TSyntaxNode): TSyntaxNode;
 var
   Temp: TSyntaxNode;
 begin
-  If Node.Typ = ntUnknown then begin
+  If (Node.Typ = ntUnknown) and (FStack.Count > 1) then begin
     //Get the next item on the stack.
     Temp:= FStack.Pop;
     Node:= FStack.Peek;
@@ -1156,6 +1166,9 @@ var
   Root: TSyntaxNode;
 begin
   Directive:= Uppercase(Lexer.Token);
+  if not (Directive.EndsWith('}') or Directive.EndsWith('*)')) then
+    raise ESyntaxTreeException.Create(Lexer.PosXY.Y, Lexer.PosXY.X,
+      Lexer.FileName, 'Unterminated compiler directive', nil);
   //Always place the compiler directive directly under the `ntInterface` or `ntImplementation` node
   //or in the main section in a library, program or package.
   Root:= GetMainSection(FStack.Peek);
@@ -1166,12 +1179,13 @@ begin
   //Parse the directive
   if (Directive.StartsWith('(*$')) then begin
     Delete(Directive, 1, 3);
-    StringReplace(Directive,'*)','}',[]);
+    Directive := StringReplace(Directive,'*)','}',[]);
   end else begin
     Delete(Directive, 1, 2);
   end;
   Part2:= 1;
-  while not CharInSet(Directive[Part2],[' ', '+', '-', '}']) do begin
+  while (Part2 <= Length(Directive)) and
+    not CharInSet(Directive[Part2],[' ', '+', '-', '}']) do begin
     Inc(Part2);
   end;
   Node.Attribute[anType]:= LeftStr(Directive, Part2-1);
@@ -1197,6 +1211,7 @@ procedure TPasSyntaxTreeBuilder.ConstantDeclaration;
 begin
   FStack.Push(ntConstant);
   try
+    if FClassPrefix then FStack.Peek.SetAttribute(anClass, AttributeValues[atTrue]);
     inherited;
   finally
     FStack.Pop;
@@ -2153,7 +2168,7 @@ end;
 procedure TPasSyntaxTreeBuilder.LibraryFile;
 begin
   //Assert(FStack.Peek.ParentNode = nil);
-  FStack.Push(TSyntaxNode.Create(ntLibrary));
+  FStack.Peek.Typ := ntLibrary;
   AssignLexerPositionToNode(Lexer, FStack.Peek);
   inherited;
   //Stack.pop is done in `Run`
@@ -2350,7 +2365,7 @@ end;
 procedure TPasSyntaxTreeBuilder.PackageFile;
 begin
   //Assert(FStack.Peek.ParentNode = nil);
-  FStack.Push(TSyntaxNode.Create(ntPackage));
+  FStack.Peek.Typ := ntPackage;
   AssignLexerPositionToNode(Lexer, FStack.Peek);
   inherited;
   //Stack.pop is done in `Run`
@@ -2446,7 +2461,7 @@ end;
 procedure TPasSyntaxTreeBuilder.ProgramFile;
 begin
   //Assert(FStack.Peek.ParentNode = nil);
-  FStack.Push(TSyntaxNode.Create(ntProgram));
+  FStack.Peek.Typ := ntProgram;
   AssignLexerPositionToNode(Lexer, FStack.Peek);
   inherited;
   //Stack.pop is done in `Run`
@@ -2653,17 +2668,23 @@ end;
 
 function TPasSyntaxTreeBuilder.Run(SourceStream: TStream): TSyntaxNode;
 begin
-  Result:= nil;
+  Result := TSyntaxNode.Create(ntUnknown);
   try
     FStack.Clear;
+    FStack.Push(Result);
     try
       self.OnMessage := ParserMessage;
       inherited Run('', SourceStream);
+      if Result.Typ = ntUnknown then
+        raise ESyntaxTreeException.Create(1, 1, Lexer.FileName,
+          'Expected unit, program, library or package declaration', nil);
     finally
-      Result:= FStack.Peek;
-      FStack.Pop;
+      FStack.Clear;
     end;
   except
+    on E: EIncludeError do
+      raise ESyntaxTreeException.Create(Lexer.PosXY.Y, Lexer.PosXY.X,
+        Lexer.FileName, E.Message, Result);
     on E: EParserException do
       raise ESyntaxTreeException.Create(E.Line, E.Col, Lexer.FileName, E.Message, Result);
     on E: ESyntaxError do
@@ -3112,7 +3133,7 @@ end;
 procedure TPasSyntaxTreeBuilder.UnitFile;
 begin
   //Assert(FStack.Peek.ParentNode = nil);
-  FStack.Push(TSyntaxNode.Create(ntUnit));
+  FStack.Peek.Typ := ntUnit;
   AssignLexerPositionToNode(Lexer, FStack.Peek);
   inherited;
   //Stack.pop is done in `Run`

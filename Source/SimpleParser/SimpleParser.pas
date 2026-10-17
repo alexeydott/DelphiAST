@@ -170,9 +170,8 @@ const
     ptRegister,
     ptReintroduce,
     ptSafeCall,
-    ptStdCall, ptWinApi,
+    ptStdCall, ptWinApi, ptExtdecl,
     ptVirtual,
-    ptWinApi,
     ptDeprecated,
     ptLibrary,
     ptPlatform,
@@ -1898,8 +1897,8 @@ end;
 procedure TmwSimplePasPar.ObjectMethodDirective;
 begin
   while ExID in [ptAbstract, ptCdecl, ptDynamic, ptExport, ptExternal, ptFar,
-    ptMessage, ptNear, ptOverload, ptPascal, ptRegister, ptSafeCall, ptStdCall, ptWinApi,
-    ptVirtual, ptWinApi, ptDeprecated, ptLibrary, ptPlatform, ptStatic, ptInline] do
+    ptMessage, ptNear, ptOverload, ptPascal, ptRegister, ptSafeCall, ptStdCall, ptWinApi, ptExtdecl,
+    ptVirtual, ptDeprecated, ptLibrary, ptPlatform, ptStatic, ptInline] do
   begin
     ProceduralDirective;
     if TokenID = ptSemiColon then Semicolon;
@@ -2211,7 +2210,7 @@ begin
 
   while ExID in [ptAbstract, ptCdecl, ptDynamic, ptExport, ptExternal, ptDelayed, ptFar,
     ptMessage, ptNear, ptOverload, ptOverride, ptPascal, ptRegister,
-    ptReintroduce, ptSafeCall, ptStdCall, ptWinApi, ptVirtual, ptWinApi, ptLibrary,
+    ptReintroduce, ptSafeCall, ptStdCall, ptWinApi, ptExtdecl, ptVirtual, ptLibrary,
     ptPlatform, ptLocal, ptVarargs, ptAssembler, ptStatic, ptInline, ptForward,
     ptExperimental, ptDeprecated, ptNoreturn] do
   begin
@@ -2682,7 +2681,7 @@ end;
 
 procedure TmwSimplePasPar.AsmStatement;
 begin
-  while not(Lexer.TokenID in [ptCRLF]) do begin
+  while not(Lexer.TokenID in [ptCRLF, ptNull]) do begin
     case TokenID of
       ptAddressOp, ptDoubleAddressOp: AsmLabelAt;
       else AsmFragment;
@@ -3402,11 +3401,7 @@ begin
       begin
         NextToken;
       end;
-    ptStdCall, ptWinApi:
-      begin
-        NextToken;
-      end;
-    ptWinApi:
+    ptStdCall, ptWinApi, ptExtdecl:
       begin
         NextToken;
       end;
@@ -4292,7 +4287,7 @@ begin
   end;
   while TheTokenID in [ptAbstract, ptCdecl, ptDynamic, ptExport, ptExternal, ptFar,
     ptMessage, ptNear, ptOverload, ptOverride, ptPascal, ptRegister,
-    ptReintroduce, ptSafeCall, ptStdCall, ptWinApi, ptVirtual, ptStatic, ptInline, ptVarargs, ptNoreturn] do
+    ptReintroduce, ptSafeCall, ptStdCall, ptWinApi, ptExtdecl, ptVirtual, ptStatic, ptInline, ptVarargs, ptNoreturn] do
   // DR 2001-11-14 no checking for deprecated etc. since it's captured by the typedecl
   begin
     if TokenID = ptSemiColon then Semicolon;
@@ -4950,7 +4945,7 @@ begin
     ptAbstract, ptDynamic, ptFinal, ptMessage, ptOverload, ptOverride, ptReintroduce, ptStatic,
     ptVirtual, ptNoreturn:
       DirectiveBinding;
-    ptCdecl, ptPascal, ptRegister, ptSafeCall, ptStdCall, ptWinApi:
+    ptCdecl, ptPascal, ptRegister, ptSafeCall, ptStdCall, ptWinApi, ptExtdecl:
       DirectiveCalling;
     ptExport, ptFar, ptNear:
       Directive16Bit;
@@ -4999,7 +4994,7 @@ begin
 
   while ExID in [ptAbstract, ptCdecl, ptDynamic, ptExport, ptExternal, ptFar,
     ptMessage, ptNear, ptOverload, ptOverride, ptPascal, ptRegister,
-    ptReintroduce, ptSafeCall, ptStdCall, ptWinApi, ptVirtual, ptWinApi,
+    ptReintroduce, ptSafeCall, ptStdCall, ptWinApi, ptExtdecl, ptVirtual,
     ptDeprecated, ptLibrary, ptPlatform, ptLocal, ptVarargs,
     ptStatic, ptInline, ptAssembler, ptForward, ptDelayed, ptFinal, ptNoreturn] do
   begin
@@ -5726,7 +5721,7 @@ begin
       end;
   end;
   while ExID in [ptCdecl, ptExport, ptFar, ptNear, ptOverload, ptOverride,
-    ptPascal, ptRegister, ptSafeCall, ptStdCall, ptWinApi, ptPlatform, ptAssembler,
+    ptPascal, ptRegister, ptSafeCall, ptStdCall, ptWinApi, ptExtdecl, ptPlatform, ptAssembler,
     ptStatic, ptInline, ptExperimental, ptDeprecated, ptNoreturn, ptVarargs] do
   begin
     ProceduralDirective;
@@ -6044,7 +6039,7 @@ begin
   if TokenID = ptSemiColon then Semicolon;
 
   while ExID in [ptCdecl, ptExport, ptFar, ptNear, ptOverload, ptOverride,
-    ptPascal, ptRegister, ptSafeCall, ptStdCall, ptWinApi, ptPlatform, ptAssembler,
+    ptPascal, ptRegister, ptSafeCall, ptStdCall, ptWinApi, ptExtdecl, ptPlatform, ptAssembler,
     ptStatic, ptInline, ptExperimental, ptDeprecated, ptNoreturn, ptVarargs] do
   begin
     ProceduralDirective;

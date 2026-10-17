@@ -12,6 +12,7 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Base)'!=''">
     <DCC_UnitSearchPath>..\..\Source;..\..\Source\SimpleParser;..\..\Source\FreePascalSupport;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
+    <DCC_IncludePath>..\..\Source\SimpleParser;$(DCC_IncludePath)</DCC_IncludePath>
     <DCC_Namespace>System;Xml;Data;$(DCC_Namespace)</DCC_Namespace>
   </PropertyGroup>
   <ItemGroup>

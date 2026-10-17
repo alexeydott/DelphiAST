@@ -10,8 +10,10 @@ implementation
 
 uses
   Classes, SysUtils, DelphiAST, DelphiAST.Classes, DelphiAST.Consts,
-  DelphiAST.Writer, DelphiAST.TestFramework, DelphiAST.TestSupport, DelphiAST.Actualization.Tests
-  {$IFNDEF FPC}, DelphiAST.Serialize.Binary{$ENDIF};
+  DelphiAST.Writer, DelphiAST.TestFramework, DelphiAST.TestSupport,
+  DelphiAST.Actualization.Tests, DelphiAST.AST.Review.Tests,
+  DelphiAST.Binary.Review.Tests, DelphiAST.Conditional.Review.Tests,
+  DelphiAST.Grammar.Review.Tests, DelphiAST.Serialize.Binary;
 
 var
   SnippetPath: string;
@@ -221,7 +223,6 @@ begin
   AssertTrue(Raised, 'Invalid syntax did not raise ESyntaxTreeException');
 end;
 
-{$IFNDEF FPC}
 procedure TestBinarySerializationRoundTrip;
 var
   OriginalRoot, RestoredRoot: TSyntaxNode;
@@ -245,11 +246,14 @@ begin
     OriginalRoot.Free;
   end;
 end;
-{$ENDIF}
 
 procedure RunAllTests;
 begin
   RunActualizationTests;
+  RunASTReviewTests;
+  RunBinaryReviewTests;
+  RunConditionalReviewTests;
+  RunGrammarReviewTests;
   RunTest('AST.UnitStructure', TestUnitStructure);
   RunTest('AST.MethodAndParameters', TestMethodAndParameters);
   RunTest('AST.ControlFlow', TestControlFlow);
@@ -258,9 +262,7 @@ begin
   RunTest('Writer.LiteralsUnicodeAndXmlEscaping', TestLiteralsAndUnicode);
   RunTest('AST.SourcePositions', TestSourcePositions);
   RunTest('Parser.InvalidSyntax', TestInvalidSyntax);
-  {$IFNDEF FPC}
   RunTest('Serialization.BinaryRoundTrip', TestBinarySerializationRoundTrip);
-  {$ENDIF}
   RunSnippetTests;
   RunInvalidSnippetTests;
 end;

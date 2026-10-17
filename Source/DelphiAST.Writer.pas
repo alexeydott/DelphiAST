@@ -16,7 +16,7 @@ type
       const Node: TSyntaxNode; Formatted: Boolean); static;
   public
     class function ToXML(const Root: TSyntaxNode;
-      Formatted: Boolean = False): string; static;
+      Formatted: Boolean = False; Header: Boolean = True): string; static;
 
     {$IFNDEF FPC}
       class function ToBinary(const Root: TSyntaxNode; Stream: TStream): Boolean; static;
@@ -82,7 +82,7 @@ class procedure TSyntaxTreeWriter.NodeToXML(const Builder: TStringBuilder;
       NewIndent := Indent + '  ';
       Builder.Append(Indent);
     end;
-    Builder.Append('<' + UpperCase(SyntaxNodeNames[Node.Typ]));
+    Builder.Append('<' + UpperCase(SyntaxNodeNames.Items[Node.Typ]));
 
     Builder.Append('  line_seq="' + IntToStr(Node.LineSeq) + '"');
 
@@ -118,7 +118,7 @@ class procedure TSyntaxTreeWriter.NodeToXML(const Builder: TStringBuilder;
     begin
       if Formatted then
         Builder.Append(Indent);
-      Builder.Append('</' + UpperCase(SyntaxNodeNames[Node.Typ]) + '>');
+      Builder.Append('</' + UpperCase(SyntaxNodeNames.Items[Node.Typ]) + '>');
       if Formatted then
         Builder.AppendLine;
     end;
@@ -142,14 +142,17 @@ end;
 {$ENDIF}
 
 class function TSyntaxTreeWriter.ToXML(const Root: TSyntaxNode;
-  Formatted: Boolean): string;
+  Formatted: Boolean; Header: Boolean): string;
 var
   Builder: TStringBuilder;
 begin
   Builder := TStringBuilder.Create;
   try
     NodeToXml(Builder, Root, Formatted);
-    Result := '<?xml version="1.0"?>' + sLineBreak + Builder.ToString;
+    if Header then
+      Result := '<?xml version="1.0"?>' + sLineBreak + Builder.ToString
+    else
+      Result := Builder.ToString
   finally
     Builder.Free;
   end;

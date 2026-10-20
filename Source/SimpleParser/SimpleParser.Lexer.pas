@@ -2289,22 +2289,32 @@ begin
 end;
 
 procedure TmwBasePasLex.NumberProc;
-begin
-  Inc(FBuffer.Run);
-  FTokenID := ptIntegerConst;
-  while CharInSet(FBuffer.Buf[FBuffer.Run], ['0'..'9', '.', 'e', 'E', '_']) do
+var
+  NextChar: Char;
+  function HasExponentDigits(Position:Integer):Boolean;
   begin
-    case FBuffer.Buf[FBuffer.Run] of
-      '.':
-        if FBuffer.Buf[FBuffer.Run + 1] = '.' then
-          Break
-        else if CharInSet(FBuffer.Buf[FBuffer.Run + 1], ['0'..'9']) then
-          FTokenID := ptFloat
-        else
-          Break;
-
+    if CharInSet(FBuffer.Buf[Position],['+','-']) then Inc(Position);
+    Result:=CharInSet(FBuffer.Buf[Position],['0'..'9']);
+  end;
+begin
+  FTokenID := ptIntegerConst;
+  while CharInSet(FBuffer.Buf[FBuffer.Run],['0'..'9','_']) do Inc(FBuffer.Run);
+  if (FBuffer.Buf[FBuffer.Run]='.') and (FBuffer.Buf[FBuffer.Run+1]<>'.') then
+  begin
+    NextChar:=FBuffer.Buf[FBuffer.Run+1];
+    if not IsIdentifiers(NextChar) or CharInSet(NextChar,['0'..'9']) then
+    begin
+      FTokenID:=ptFloat;
+      Inc(FBuffer.Run);
+      while CharInSet(FBuffer.Buf[FBuffer.Run],['0'..'9','_']) do Inc(FBuffer.Run);
     end;
+  end;
+  if CharInSet(FBuffer.Buf[FBuffer.Run],['e','E']) and HasExponentDigits(FBuffer.Run+1) then
+  begin
+    FTokenID:=ptFloat;
     Inc(FBuffer.Run);
+    if CharInSet(FBuffer.Buf[FBuffer.Run],['+','-']) then Inc(FBuffer.Run);
+    while CharInSet(FBuffer.Buf[FBuffer.Run],['0'..'9','_']) do Inc(FBuffer.Run);
   end;
 end;
 

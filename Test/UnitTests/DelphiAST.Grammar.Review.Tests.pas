@@ -281,8 +281,51 @@ begin
   end;
 end;
 
+procedure TestDirectiveAfterExpression;
+var Root,Assignment,Right:TSyntaxNode;
+begin
+  Root:=ParseSource('unit DirectiveExpr; interface implementation procedure Run; begin '+
+    '{$region ''calculation''} R := TRect.Create(TPoint.Create(X,Y),W,H) {$endregion} end; end.');
+  try
+    AssertEquals(2,CountDescendants(Root,ntCompilerDirective));
+    Assignment:=FindDescendant(Root,ntAssign);AssertNotNil(Assignment);
+    Right:=Assignment.FindNode(ntRHS);AssertNotNil(Right);
+    AssertEquals(0,CountDescendants(Right,ntCompilerDirective));
+    AssertEquals(1,Length(Right.ChildNodes));
+    AssertEquals(2,CountDescendants(Right,ntCall));
+  finally Root.Free;end;
+end;
+
+procedure TestTrailingDecimalPoint;
+var Root,Literal:TSyntaxNode;Value:string;
+begin
+  for Value in ['5.','0.','5e+2','5E-2','5.25e+2'] do begin
+    Root:=ParseSource('unit DecimalPoint; interface type TRange=1..5; implementation '+
+      'function Run:Single; begin Result:='+Value+' end; end.');
+    try
+      Literal:=FindDescendant(FindDescendant(Root,ntRHS),ntLiteral);AssertNotNil(Literal);
+      AssertEquals(Value,TValuedSyntaxNode(Literal).Value);
+    finally Root.Free;end;
+  end;
+end;
+
+procedure TestErrorCoordinates;
+var Root:TSyntaxNode;Rejected:Boolean;
+begin
+ Root:=nil;Rejected:=False;
+ try
+  try
+   Root:=ParseSource('unit BrokenUnit;'+#10+'interface'+#10+'procedure Run;'+#10+'implementation'+#10+'procedure Run;'+#10+'begin'+#10+'  Value := (1 + 2;'+#10+'end;'+#10+'end.');
+  except on E:ESyntaxTreeException do begin Rejected:=True;AssertEquals(7,E.Line);AssertEquals(18,E.Col);end;end;
+  AssertTrue(Rejected,'Expected a syntax error with source coordinates');
+ finally Root.Free;end;
+end;
+
 procedure RunGrammarReviewTests;
 begin
+  RunTest('Grammar.Diagnostics.ErrorCoordinates',TestErrorCoordinates);
+  RunTest('Grammar.Expressions.DirectiveAfterExpression',TestDirectiveAfterExpression);
+  RunTest('Grammar.Numbers.TrailingDecimalPoint',TestTrailingDecimalPoint);
   RunTest('Grammar.Assembly.CompactEnd', TestCompactAssemblyEnd);
   RunTest('Grammar.Assembly.SemicolonSeparators', TestAssemblySemicolonSeparators);
   RunTest('Grammar.Assembly.ReservedLocalLabels', TestAssemblyReservedLocalLabels);

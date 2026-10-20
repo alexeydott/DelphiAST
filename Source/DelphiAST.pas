@@ -36,6 +36,7 @@ type
     procedure Clear; inline;
     function Peek: TSyntaxNode; inline;
     function Pop: TSyntaxNode; inline;
+    procedure RestoreTop(Node: TSyntaxNode);
 
     function Push(Typ: TSyntaxNodeType): TSyntaxNode; overload;
     function Push(Node: TSyntaxNode): TSyntaxNode; overload;
@@ -423,6 +424,11 @@ begin
   FStack.Push(Node);
   Result := Node;
   AssignLexerPositionToNode(FLexer, Result);
+end;
+
+procedure TNodeStack.RestoreTop(Node: TSyntaxNode);
+begin
+  FStack.Push(Node);
 end;
 
 function TNodeStack.PushCompoundSyntaxNode(Typ: TSyntaxNodeType): TSyntaxNode;
@@ -1160,11 +1166,17 @@ function TPasSyntaxTreeBuilder.GetMainSection(Node: TSyntaxNode): TSyntaxNode;
 var
   Temp: TSyntaxNode;
 begin
-  If (Node.Typ = ntUnknown) and (FStack.Count > 1) then begin
-    //Get the next item on the stack.
+  if not Assigned(Node.ParentNode) and (FStack.Count > 1) then begin
+    // Raw expressions and statements are temporarily detached. Directives
+    // belong to the containing section, never to their operand lists.
     Temp:= FStack.Pop;
-    Node:= FStack.Peek;
-    FStack.Push(Temp);
+    try
+      Result:=GetMainSection(FStack.Peek);
+    finally
+      // Restoring the stack must not overwrite the original source position.
+      FStack.RestoreTop(Temp);
+    end;
+    Exit;
   end;
   if not(Assigned(Node.ParentNode)) then Exit(Node); //return the root node.
   while Assigned(Node.ParentNode.ParentNode) do Node:= Node.ParentNode;
@@ -2718,9 +2730,12 @@ begin
       raise ESyntaxTreeException.Create(Lexer.PosXY.Y, Lexer.PosXY.X,
         Lexer.FileName, E.Message, Result);
     on E: EParserException do
-      raise ESyntaxTreeException.Create(E.Line, E.Col, Lexer.FileName, E.Message, Result);
+      if E.FileName<>'' then
+        raise ESyntaxTreeException.Create(E.Line, E.Col, E.FileName, E.Message, Result)
+      else
+        raise ESyntaxTreeException.Create(E.Line, E.Col, Lexer.FileName, E.Message, Result);
     on E: ESyntaxError do
-      raise ESyntaxTreeException.Create(E.PosXY.X, E.PosXY.Y, Lexer.FileName, E.Message, Result);
+      raise ESyntaxTreeException.Create(E.PosXY.Y, E.PosXY.X, Lexer.FileName, E.Message, Result);
     else
       FreeAndNil(Result);
       raise;

@@ -18,6 +18,12 @@ def run(executable, snippets, output, count, seed):
             values = ','.join(str(rng.randrange(1000)) for _ in range(rng.randrange(1, 10)))
             s = f'unit Fuzz{i}; interface type TCallback = reference to procedure(Value: Integer); TRec = record case Kind: Byte of 0:(Value: Integer); 1:(Other: Double); end; implementation procedure Run; begin var a := [{values}]; for var x in a do begin if x > 5 then Continue; end; end; end.'
             cases.append((s, True))
+            # Detached statement/directive ownership and real-number boundaries.
+            number = str(rng.randrange(100000)) + rng.choice(['.', '.0', '.25e+2', '.25E-2', 'e+2', 'E-2'])
+            directive = rng.choice(['{$endregion}', '(*$endregion*)', '{$R+}', '{$Q-}'])
+            expression = rng.choice([number, f'Wrap(Point.Create({number},2.),3.)'])
+            cases.append((f'unit Expr{i}; interface type TRange=1..5; implementation '
+                          f'procedure Run; begin Result := {expression} {directive} end; end.', True))
             # Focused literal grammar and truncation fuzzing.
             quote = chr(39) * rng.choice([3, 5, 7, 9])
             newline = rng.choice(['\n', '\r\n', '\r'])

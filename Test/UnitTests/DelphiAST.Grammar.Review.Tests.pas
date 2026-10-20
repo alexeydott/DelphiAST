@@ -297,9 +297,13 @@ begin
 end;
 
 procedure TestTrailingDecimalPoint;
+const
+  // FPC 3.2.x truncates strings in an untyped for-in array constructor to
+  // the first element's length. Keep exponent inputs intact on both compilers.
+  Values: array[0..4] of string = ('5.','0.','5e+2','5E-2','5.25e+2');
 var Root,Literal:TSyntaxNode;Value:string;
 begin
-  for Value in ['5.','0.','5e+2','5E-2','5.25e+2'] do begin
+  for Value in Values do begin
     Root:=ParseSource('unit DecimalPoint; interface type TRange=1..5; implementation '+
       'function Run:Single; begin Result:='+Value+' end; end.');
     try
